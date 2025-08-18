@@ -1,3 +1,4 @@
+# server.py - COMPLETE AND UPDATED CODE
 import os
 import re
 import json
@@ -119,26 +120,23 @@ def admin_required(f):
 
 # --- AUTHENTICATION & REGISTRATION ENDPOINTS ---
 
-@app.route('/auth/companies', methods=['GET'])
-def get_companies():
-    # Note: This is now legacy, as login doesn't require a company selection.
-    # It can be useful for other purposes or future features.
-    companies_cur = g.db.execute("SELECT id, name FROM companies ORDER BY name").fetchall()
-    return jsonify([dict(row) for row in companies_cur])
-
 @app.route('/auth/login', methods=['POST'])
 def login():
     auth = request.json
-    # MODIFIED: Login now uses email, not username and company_id
-    if not auth or not auth.get('email') or not auth.get('password'):
-        return jsonify({'message': 'Email and password are required'}), 401
+    # --- MODIFIED: Accept a generic 'identifier' which can be email or username ---
+    if not auth or not auth.get('identifier') or not auth.get('password'):
+        return jsonify({'message': 'Identifier and password are required'}), 401
     
+    identifier = auth['identifier']
+    
+    # --- MODIFIED: Query checks both username and email columns ---
     user_row = g.db.execute(
-        "SELECT * FROM users WHERE lower(email) = lower(?)", (auth['email'],)
+        "SELECT * FROM users WHERE lower(email) = lower(?) OR lower(username) = lower(?)", 
+        (identifier, identifier)
     ).fetchone()
 
     if not user_row:
-        return jsonify({'message': 'User with this email not found'}), 401
+        return jsonify({'message': 'User not found'}), 401
     
     user = dict(user_row)
     if check_password_hash(user['password_hash'], auth['password']):
@@ -153,7 +151,6 @@ def login():
 @app.route('/auth/register_company', methods=['POST'])
 def register_company():
     data = request.json
-    # MODIFIED: Admin's email is now required for registration
     if not all(k in data for k in ['company_name', 'admin_username', 'admin_email', 'admin_password']):
         return jsonify({'message': 'Missing company name, admin username, email, or password'}), 400
 
@@ -167,9 +164,8 @@ def register_company():
         password_hash = generate_password_hash(data['admin_password'])
         cursor = g.db.cursor()
         cursor.execute("INSERT INTO companies (id, name) VALUES (?, ?)", (new_company_id, data['company_name']))
-        # MODIFIED: Insert email into the new user record
         cursor.execute("INSERT INTO users (id, username, email, password_hash, company_id, role) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), data['admin_username'], data['admin_email'], password_hash, new_company_id, 'admin'))
+                       (str(uuid.uuid4()), data['admin_username'], data['admin_email'], password_hash, new_company_id, 'admin'))
         g.db.commit()
     except Exception as e:
         g.db.rollback(); return jsonify({'message': f'An error occurred: {e}'}), 500
@@ -180,7 +176,6 @@ def register_company():
 @admin_required
 def create_user():
     data = request.json
-    # MODIFIED: Email is now required to create a new user
     if not all(k in data for k in ['username', 'email', 'password', 'role']):
         return jsonify({'message': 'Missing username, email, password, or role'}), 400
     
@@ -195,9 +190,8 @@ def create_user():
 
     try:
         password_hash = generate_password_hash(data['password'])
-        # MODIFIED: Insert email for the new user
         g.db.execute("INSERT INTO users (id, username, email, password_hash, company_id, role) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), data['username'], data['email'], password_hash, company_id, data['role']))
+                       (str(uuid.uuid4()), data['username'], data['email'], password_hash, company_id, data['role']))
         g.db.commit()
     except Exception as e:
         g.db.rollback(); return jsonify({'message': f'Failed to create user: {e}'}), 500
@@ -205,7 +199,7 @@ def create_user():
     return jsonify({'message': f"User '{data['username']}' created successfully."}), 201
 
 
-# --- NEW: USER PROFILE ENDPOINTS ---
+# --- USER PROFILE ENDPOINTS ---
 
 @app.route('/user/profile', methods=['GET', 'POST'])
 @token_required
@@ -378,7 +372,7 @@ def handle_filaments():
             for material, brands in request.json.items():
                 for brand, details in brands.items():
                     cursor.execute("INSERT INTO filaments (company_id, material, brand, price, stock_g, efficiency_factor) VALUES (?, ?, ?, ?, ?, ?)",
-                        (company_id, material, brand, details['price'], details['stock_g'], details['efficiency_factor']))
+                                   (company_id, material, brand, details['price'], details['stock_g'], details['efficiency_factor']))
             g.db.commit()
             return jsonify({"status": "saved"})
         except Exception as e:
@@ -505,29 +499,21 @@ def extract_data_from_ocr(company_id, ocr_results):
         "detected_printer_id": None
     }
 
-    # 1. Extract Filament (more precise)
-    # Looks for a number followed by 'g' AFTER "total filament" or "filament used"
     filament_match = re.search(r'(?:total filament|filament used)\D*(\d+\.?\d*)\s*g', full_text)
     if filament_match:
         extracted_data["filament"] = round(float(filament_match.group(1)), 2)
-    else:  # Fallback to the original, less specific method
+    else:
         filament_match_fallback = re.search(r'(\d+\.?\d*)\s*g', full_text)
         if filament_match_fallback:
             extracted_data["filament"] = round(float(filament_match_fallback.group(1)), 2)
 
-    # 2. Extract Time (more precise)
     hours, minutes = 0, 0
-    # Looks for a time pattern AFTER "total time" or "print time"
     time_block_match = re.search(r'(?:total time|print time)\D*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?', full_text)
     if time_block_match:
-        h_val = time_block_match.group(1)
-        m_val = time_block_match.group(2)
-        if h_val:
-            hours = int(h_val)
-        if m_val:
-            minutes = int(m_val)
+        h_val, m_val = time_block_match.groups()
+        if h_val: hours = int(h_val)
+        if m_val: minutes = int(m_val)
     
-    # Fallback if the specific search finds nothing
     if hours == 0 and minutes == 0:
         h_match_fallback = re.search(r'(\d+)\s*h', full_text)
         m_match_fallback = re.search(r'(\d+)\s*m', full_text)
@@ -537,7 +523,6 @@ def extract_data_from_ocr(company_id, ocr_results):
     if hours > 0 or minutes > 0:
         extracted_data["time_str"] = f"{hours}h {minutes}m"
 
-    # 3. Detect Material by checking against the database
     filaments_cur = g.db.execute("SELECT DISTINCT material FROM filaments WHERE company_id = ?", (company_id,)).fetchall()
     known_materials = [row['material'].lower() for row in filaments_cur]
     for material in known_materials:
@@ -545,7 +530,6 @@ def extract_data_from_ocr(company_id, ocr_results):
             extracted_data["material"] = material.upper()
             break 
 
-    # 4. Detect Printer by checking against the database
     printers_cur = g.db.execute("SELECT id, brand, model FROM printers WHERE company_id = ?", (company_id,)).fetchall()
     for printer in printers_cur:
         if printer['brand'].lower() in full_text or printer['model'].lower() in full_text:
@@ -560,7 +544,7 @@ def update_filament_stock(company_id, final_data):
         grams_used = float(final_data.get("Filament (g)", 0))
         if not all([material, brand, grams_used > 0]): return
         g.db.execute("UPDATE filaments SET stock_g = stock_g - ? WHERE company_id = ? AND material = ? AND brand = ?",
-            (grams_used, company_id, material, brand))
+                       (grams_used, company_id, material, brand))
         g.db.commit()
     except Exception as e:
         g.db.rollback(); print(f"❌ Error updating stock for company {company_id}: {e}")

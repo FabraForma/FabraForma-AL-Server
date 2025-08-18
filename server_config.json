@@ -1,0 +1,26 @@
+{
+    "SERVER_SHARE_DIR": "server_share",
+    "TEMPLATE_PATH": "FDM.xlsx",
+    "cells": [
+        "D4",
+        "D9",
+        "D10",
+        "D11",
+        "D12",
+        "D13"
+    ],
+    "headers": [
+        "Sr. No",
+        "Date",
+        "Part Number",
+        "Filename",
+        "Material",
+        "Filament Cost (\u20b9/kg)",
+        "Filament (g)",
+        "Time (h)",
+        "Labour Time (min)",
+        "User COGS (\u20b9)",
+        "Default COGS (\u20b9)",
+        "Source Link"
+    ]
+}
