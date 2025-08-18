@@ -1,0 +1,675 @@
+import os
+import re
+import json
+import time
+import shutil
+import sys
+import traceback
+from datetime import datetime, timedelta
+from functools import wraps
+import uuid
+
+from database import get_db_connection, init_db
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import jwt
+from PIL import Image
+import easyocr
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
+from flask import Flask, jsonify, request, send_from_directory, g
+from flask_cors import CORS
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.lib.units import inch
+from reportlab.lib import utils
+from reportlab.lib import colors
+
+try:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(SCRIPT_DIR)
+except NameError:
+    SCRIPT_DIR = os.getcwd()
+
+CONFIG_PATH = "server_config.json"
+APP_CONFIG = {}
+ocr_reader = None
+app = Flask(__name__)
+CORS(app)
+
+# --- FLASK APP CONTEXT & DATABASE ---
+
+@app.before_request
+def before_request():
+    g.db = get_db_connection()
+
+@app.teardown_request
+def teardown_request(exception):
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+# --- HELPER FUNCTIONS (GENERAL) ---
+
+def get_ocr_reader():
+    global ocr_reader
+    if ocr_reader is None:
+        print("⏳ Loading EasyOCR model into memory...")
+        try:
+            ocr_reader = easyocr.Reader(['en'], gpu=False)
+            print("✅ EasyOCR model loaded.")
+        except Exception as e:
+            print(f"🛑 FATAL: Could not load EasyOCR model. Error: {e}")
+            ocr_reader = None
+    return ocr_reader
+
+def get_company_data_path(company_id, *args):
+    base_path = os.path.join(SCRIPT_DIR, "data", str(company_id))
+    os.makedirs(base_path, exist_ok=True)
+    return os.path.join(base_path, *args)
+
+def load_app_config():
+    try:
+        with open(CONFIG_PATH, 'r') as f: return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError): return {}
+
+def save_app_config(data):
+    with open(CONFIG_PATH, 'w') as f: json.dump(data, f, indent=4)
+    global APP_CONFIG
+    APP_CONFIG = data.copy()
+
+def get_safe_path(subpath):
+    share_dir = os.path.abspath(APP_CONFIG.get("SERVER_SHARE_DIR", "server_share"))
+    target_path = os.path.abspath(os.path.join(share_dir, subpath))
+    if not target_path.startswith(share_dir): return None
+    return target_path
+
+# --- DECORATORS FOR AUTHENTICATION ---
+
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        if 'Authorization' in request.headers:
+            token = request.headers['Authorization'].split(" ")[1]
+        if not token:
+            return jsonify({'message': 'Token is missing!'}), 401
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            g.current_user = {
+                'user_id': data['user_id'], 'username': data['username'],
+                'company_id': data['company_id'], 'role': data['role']
+            }
+        except jwt.ExpiredSignatureError:
+            return jsonify({'message': 'Token has expired!'}), 401
+        except Exception as e:
+            return jsonify({'message': 'Token is invalid!', 'error': str(e)}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    @wraps(f)
+    @token_required
+    def decorated(*args, **kwargs):
+        if g.current_user['role'] != 'admin':
+            return jsonify({'message': 'Admin privileges required!'}), 403
+        return f(*args, **kwargs)
+    return decorated
+
+# --- AUTHENTICATION & REGISTRATION ENDPOINTS ---
+
+@app.route('/auth/companies', methods=['GET'])
+def get_companies():
+    # Note: This is now legacy, as login doesn't require a company selection.
+    # It can be useful for other purposes or future features.
+    companies_cur = g.db.execute("SELECT id, name FROM companies ORDER BY name").fetchall()
+    return jsonify([dict(row) for row in companies_cur])
+
+@app.route('/auth/login', methods=['POST'])
+def login():
+    auth = request.json
+    # MODIFIED: Login now uses email, not username and company_id
+    if not auth or not auth.get('email') or not auth.get('password'):
+        return jsonify({'message': 'Email and password are required'}), 401
+    
+    user_row = g.db.execute(
+        "SELECT * FROM users WHERE lower(email) = lower(?)", (auth['email'],)
+    ).fetchone()
+
+    if not user_row:
+        return jsonify({'message': 'User with this email not found'}), 401
+    
+    user = dict(user_row)
+    if check_password_hash(user['password_hash'], auth['password']):
+        token = jwt.encode({
+            'user_id': user['id'], 'username': user['username'], 'company_id': user['company_id'],
+            'role': user['role'], 'exp': datetime.utcnow() + timedelta(hours=24)
+        }, app.config['SECRET_KEY'], algorithm="HS256")
+        return jsonify({'token': token})
+    
+    return jsonify({'message': 'Invalid credentials'}), 401
+
+@app.route('/auth/register_company', methods=['POST'])
+def register_company():
+    data = request.json
+    # MODIFIED: Admin's email is now required for registration
+    if not all(k in data for k in ['company_name', 'admin_username', 'admin_email', 'admin_password']):
+        return jsonify({'message': 'Missing company name, admin username, email, or password'}), 400
+
+    if g.db.execute("SELECT id FROM companies WHERE lower(name) = lower(?)", (data['company_name'],)).fetchone():
+        return jsonify({'message': 'A company with this name already exists'}), 409
+    if g.db.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (data['admin_email'],)).fetchone():
+        return jsonify({'message': 'This email is already registered'}), 409
+
+    try:
+        new_company_id = str(uuid.uuid4())
+        password_hash = generate_password_hash(data['admin_password'])
+        cursor = g.db.cursor()
+        cursor.execute("INSERT INTO companies (id, name) VALUES (?, ?)", (new_company_id, data['company_name']))
+        # MODIFIED: Insert email into the new user record
+        cursor.execute("INSERT INTO users (id, username, email, password_hash, company_id, role) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), data['admin_username'], data['admin_email'], password_hash, new_company_id, 'admin'))
+        g.db.commit()
+    except Exception as e:
+        g.db.rollback(); return jsonify({'message': f'An error occurred: {e}'}), 500
+    
+    return jsonify({'message': f"Company '{data['company_name']}' created successfully."}), 201
+
+@app.route('/auth/create_user', methods=['POST'])
+@admin_required
+def create_user():
+    data = request.json
+    # MODIFIED: Email is now required to create a new user
+    if not all(k in data for k in ['username', 'email', 'password', 'role']):
+        return jsonify({'message': 'Missing username, email, password, or role'}), 400
+    
+    if data['role'] not in ['admin', 'user']:
+        return jsonify({'message': "Role must be 'admin' or 'user'"}), 400
+    
+    company_id = g.current_user['company_id']
+    if g.db.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (data['email'],)).fetchone():
+        return jsonify({'message': 'This email is already registered'}), 409
+    if g.db.execute("SELECT id FROM users WHERE lower(username) = lower(?) AND company_id = ?", (data['username'], company_id)).fetchone():
+        return jsonify({'message': 'This username already exists in your company'}), 409
+
+    try:
+        password_hash = generate_password_hash(data['password'])
+        # MODIFIED: Insert email for the new user
+        g.db.execute("INSERT INTO users (id, username, email, password_hash, company_id, role) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), data['username'], data['email'], password_hash, company_id, data['role']))
+        g.db.commit()
+    except Exception as e:
+        g.db.rollback(); return jsonify({'message': f'Failed to create user: {e}'}), 500
+
+    return jsonify({'message': f"User '{data['username']}' created successfully."}), 201
+
+
+# --- NEW: USER PROFILE ENDPOINTS ---
+
+@app.route('/user/profile', methods=['GET', 'POST'])
+@token_required
+def user_profile():
+    user_id = g.current_user['user_id']
+    if request.method == 'GET':
+        user_row = g.db.execute(
+            "SELECT username, email, phone_number, dob, profile_picture_path FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if not user_row:
+            return jsonify({'message': 'User not found'}), 404
+        
+        profile_data = dict(user_row)
+        if profile_data.get('profile_picture_path'):
+            profile_data['profile_picture_url'] = f"{request.url_root.rstrip('/')}/user/profile_picture/{profile_data['profile_picture_path']}"
+        return jsonify(profile_data)
+
+    if request.method == 'POST':
+        data = request.json
+        allowed_fields = {'username': data.get('username'), 'phone_number': data.get('phone_number'), 'dob': data.get('dob')}
+        update_fields = {k: v for k, v in allowed_fields.items() if v is not None}
+        
+        if not update_fields:
+            return jsonify({'message': 'No update information provided'}), 400
+
+        set_clause = ", ".join([f"{key} = ?" for key in update_fields.keys()])
+        params = list(update_fields.values()) + [user_id]
+
+        try:
+            g.db.execute(f"UPDATE users SET {set_clause} WHERE id = ?", tuple(params))
+            g.db.commit()
+            return jsonify({'message': 'Profile updated successfully'})
+        except Exception as e:
+            g.db.rollback()
+            return jsonify({'message': f'Failed to update profile: {e}'}), 500
+
+@app.route('/user/change_password', methods=['POST'])
+@token_required
+def change_password():
+    user_id = g.current_user['user_id']
+    data = request.json
+    if not data or not data.get('current_password') or not data.get('new_password'):
+        return jsonify({'message': 'Current and new passwords are required'}), 400
+    
+    user = g.db.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user:
+        return jsonify({'message': 'User not found'}), 404
+    
+    if not check_password_hash(user['password_hash'], data['current_password']):
+        return jsonify({'message': 'Current password is not correct'}), 403
+        
+    new_password_hash = generate_password_hash(data['new_password'])
+    try:
+        g.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (new_password_hash, user_id))
+        g.db.commit()
+        return jsonify({'message': 'Password updated successfully'})
+    except Exception as e:
+        g.db.rollback()
+        return jsonify({'message': f'Failed to update password: {e}'}), 500
+
+@app.route('/user/profile_picture', methods=['POST'])
+@token_required
+def upload_profile_picture():
+    user_id = g.current_user['user_id']
+    company_id = g.current_user['company_id']
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+
+    if file:
+        filename = secure_filename(f"{user_id}_{int(time.time())}{os.path.splitext(file.filename)[1]}")
+        upload_folder = get_company_data_path(company_id, "profile_pictures")
+        os.makedirs(upload_folder, exist_ok=True)
+        
+        file_path = os.path.join(upload_folder, filename)
+        file.save(file_path)
+
+        try:
+            g.db.execute("UPDATE users SET profile_picture_path = ? WHERE id = ?", (filename, user_id))
+            g.db.commit()
+            new_url = f"{request.url_root.rstrip('/')}/user/profile_picture/{filename}"
+            return jsonify({'message': 'Profile picture updated', 'filepath': filename, 'url': new_url})
+        except Exception as e:
+            g.db.rollback()
+            return jsonify({'message': f'Failed to update database: {e}'}), 500
+
+@app.route('/user/profile_picture/<path:filename>')
+@token_required
+def serve_profile_picture(filename):
+    company_id = g.current_user['company_id']
+    directory = get_company_data_path(company_id, "profile_pictures")
+    return send_from_directory(directory, filename)
+
+
+# --- CORE APPLICATION ENDPOINTS ---
+
+@app.route('/server/settings', methods=['GET', 'POST'])
+@admin_required
+def handle_server_settings():
+    if request.method == 'POST':
+        try:
+            save_app_config(request.json); return jsonify({"status": "success", "message": "Settings saved."})
+        except Exception as e:
+            return jsonify({"status": "error", "message": f"Failed to save settings: {e}"}), 500
+    else: return jsonify(load_app_config())
+
+@app.route('/server/files/', defaults={'subpath': ''})
+@app.route('/server/files/<path:subpath>')
+@admin_required
+def list_files(subpath):
+    safe_path = get_safe_path(subpath)
+    if not safe_path or not os.path.isdir(safe_path): return jsonify({"error": "Invalid path"}), 404
+    try:
+        file_list = [{"name": item, "type": "dir" if os.path.isdir(os.path.join(safe_path, item)) else "file",
+                      "size": os.path.getsize(os.path.join(safe_path, item)) if not os.path.isdir(os.path.join(safe_path, item)) else 0}
+                     for item in os.listdir(safe_path)]
+        return jsonify(file_list)
+    except Exception as e: return jsonify({"error": str(e)}), 500
+
+@app.route('/server/upload/', defaults={'subpath': ''}, methods=['POST'])
+@app.route('/server/upload/<path:subpath>', methods=['POST'])
+@admin_required
+def upload_file(subpath):
+    safe_path = get_safe_path(subpath)
+    if not safe_path or not os.path.isdir(safe_path): return jsonify({"error": "Invalid destination"}), 400
+    if 'file' not in request.files or not request.files['file'].filename: return jsonify({"error": "No file part"}), 400
+    file = request.files['file']; filename = secure_filename(file.filename)
+    file.save(os.path.join(safe_path, filename))
+    return jsonify({"status": "success", "message": f"File '{filename}' uploaded."})
+
+@app.route('/server/download/<path:filepath>')
+@admin_required
+def download_server_file(filepath):
+    safe_path = get_safe_path(filepath)
+    if not safe_path or not os.path.isfile(safe_path): return jsonify({"error": "File not found"}), 404
+    return send_from_directory(os.path.dirname(safe_path), os.path.basename(safe_path), as_attachment=True)
+
+@app.route('/printers', methods=['GET', 'POST'])
+@token_required
+def handle_printers():
+    company_id = g.current_user['company_id']
+    if request.method == 'POST':
+        try:
+            cursor = g.db.cursor()
+            cursor.execute("DELETE FROM printers WHERE company_id = ?", (company_id,))
+            for p in request.json:
+                cursor.execute("""
+                    INSERT INTO printers (id, company_id, brand, model, setup_cost, maintenance_cost, lifetime_years, power_w, price_kwh, buffer_factor, uptime_percent)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (p['id'], company_id, p['brand'], p['model'], p['setup_cost'], p['maintenance_cost'], p['lifetime_years'], p['power_w'], p['price_kwh'], p.get('buffer_factor', 1.0), p.get('uptime_percent', 50)))
+            g.db.commit()
+            return jsonify({"status": "saved"})
+        except Exception as e:
+            g.db.rollback(); return jsonify({"status": "error", "message": str(e)}), 500
+    else:
+        printers_cur = g.db.execute("SELECT * FROM printers WHERE company_id = ?", (company_id,)).fetchall()
+        return jsonify([dict(row) for row in printers_cur])
+
+@app.route('/filaments', methods=['GET', 'POST'])
+@token_required
+def handle_filaments():
+    company_id = g.current_user['company_id']
+    if request.method == 'POST':
+        try:
+            cursor = g.db.cursor()
+            cursor.execute("DELETE FROM filaments WHERE company_id = ?", (company_id,))
+            for material, brands in request.json.items():
+                for brand, details in brands.items():
+                    cursor.execute("INSERT INTO filaments (company_id, material, brand, price, stock_g, efficiency_factor) VALUES (?, ?, ?, ?, ?, ?)",
+                        (company_id, material, brand, details['price'], details['stock_g'], details['efficiency_factor']))
+            g.db.commit()
+            return jsonify({"status": "saved"})
+        except Exception as e:
+            g.db.rollback(); return jsonify({"status": "error", "message": str(e)}), 500
+    else:
+        filaments_cur = g.db.execute("SELECT * FROM filaments WHERE company_id = ?", (company_id,)).fetchall()
+        filaments_dict = {}
+        for row in filaments_cur:
+            material = row['material']
+            if material not in filaments_dict: filaments_dict[material] = {}
+            filaments_dict[material][row['brand']] = {'price': row['price'], 'stock_g': row['stock_g'], 'efficiency_factor': row['efficiency_factor']}
+        return jsonify(filaments_dict)
+
+@app.route('/logs', methods=['GET'])
+@token_required
+def get_logs():
+    log_path = get_company_data_path(g.current_user['company_id'], "app_logs.json")
+    try:
+        with open(log_path, 'r') as f: return jsonify(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError): return jsonify([])
+
+@app.route('/processed_log', methods=['GET'])
+@token_required
+def get_processed_log():
+    log_path = get_company_data_path(g.current_user['company_id'], "processed_log.json")
+    try:
+        with open(log_path, 'r') as f: return jsonify(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError): return jsonify({})
+
+@app.route('/generate_quotation', methods=['POST'])
+@token_required
+def generate_quotation():
+    company_id = g.current_user['company_id']
+    try:
+        data = json.loads(request.form['json'])
+        uploads_folder = get_company_data_path(company_id, "uploads")
+        os.makedirs(uploads_folder, exist_ok=True)
+        if 'logo' in request.files:
+            logo_file = request.files['logo']
+            logo_path = os.path.join(uploads_folder, secure_filename(logo_file.filename))
+            logo_file.save(logo_path)
+            data['company_details']['logo_path'] = logo_path
+        output_folder = get_company_data_path(company_id, "Quotations")
+        os.makedirs(output_folder, exist_ok=True)
+        filename = f"Quotation_{data['customer_name'].replace(' ', '_')}_{int(time.time())}.pdf"
+        generate_quotation_pdf(os.path.join(output_folder, filename), data)
+        return jsonify({"status": "success", "filepath": os.path.join(output_folder, filename)})
+    except Exception as e:
+        traceback.print_exc(); return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/images/<path:filename>')
+@token_required
+def serve_image(filename):
+    image_dir = get_company_data_path(g.current_user['company_id'], "local_log_images")
+    return send_from_directory(image_dir, filename)
+
+@app.route('/ocr_upload', methods=['POST'])
+@token_required
+def ocr_upload():
+    if 'image' not in request.files: return jsonify({"error": "No image file provided"}), 400
+    try:
+        reader = get_ocr_reader()
+        if not reader: return jsonify({"error": "OCR model not available."}), 500
+        ocr_results = reader.readtext(request.files['image'].read())
+        return jsonify(extract_data_from_ocr(g.current_user['company_id'], ocr_results))
+    except Exception as e:
+        traceback.print_exc(); return jsonify({"error": f"OCR processing failed: {e}"}), 500
+
+@app.route('/process_image', methods=['POST'])
+@token_required
+def process_image_upload():
+    company_id = g.current_user['company_id']
+    if 'image' not in request.files or 'json' not in request.form: return jsonify({"error": "Missing image or data"}), 400
+    final_data = json.loads(request.form['json']); image_file = request.files['image']
+    try:
+        image_dir = get_company_data_path(company_id, "local_log_images")
+        os.makedirs(image_dir, exist_ok=True)
+        new_filename = final_data["Filename"] + os.path.splitext(image_file.filename)[1]
+        image_file.save(os.path.join(image_dir, new_filename))
+
+        printer_row = g.db.execute("SELECT * FROM printers WHERE id=? AND company_id=?", (final_data.get("printer_id"), company_id)).fetchone()
+        filament_row = g.db.execute("SELECT * FROM filaments WHERE material=? AND brand=? AND company_id=?", (final_data.get("Material"), final_data.get("Brand"), company_id)).fetchone()
+        if not printer_row or not filament_row: return jsonify({"status": "error", "message": "Printer/filament not found."}), 400
+        printer, filament = dict(printer_row), dict(filament_row)
+
+        cogs = calculate_cogs_values(final_data, printer, filament)
+        excel_path, excel_msg = create_excel_file(company_id, final_data, printer, filament)
+        if not excel_path: return jsonify({"status": "error", "message": excel_msg}), 500
+        success, msg = log_to_master_excel(company_id, excel_path, final_data, cogs['user_cogs'], cogs['default_cogs'])
+        if not success: return jsonify({"status": "error", "message": msg}), 500
+        update_filament_stock(company_id, final_data)
+        save_app_log(company_id, final_data, cogs, new_filename)
+        processed_log_path = get_company_data_path(company_id, "processed_log.json")
+        processed_log = json.load(open(processed_log_path)) if os.path.exists(processed_log_path) else {}
+        processed_log[os.path.basename(image_file.filename)] = "completed"
+        with open(processed_log_path, 'w') as f: json.dump(processed_log, f, indent=2)
+        return jsonify({"status": "success", "message": "File processed and logged successfully."})
+    except Exception as e:
+        traceback.print_exc(); return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/download/log/<path:filename>')
+@token_required
+def download_log_file(filename):
+    excel_dir = get_company_data_path(g.current_user['company_id'], "Excel_Logs")
+    return send_from_directory(os.path.abspath(excel_dir), filename, as_attachment=True)
+
+@app.route('/download/masterlog/<year_month>')
+@token_required
+def download_master_log_file(year_month):
+    filename = f"master_log_{year_month.split('_')[1]}.xlsx"
+    directory = get_company_data_path(g.current_user['company_id'], "Monthly_Expenditure", year_month)
+    return send_from_directory(os.path.abspath(directory), filename, as_attachment=True)
+
+# --- PROCESSING HELPER FUNCTIONS (FULL CODE) ---
+
+def extract_data_from_ocr(company_id, ocr_results):
+    """Parses raw OCR text to extract structured print data with improved accuracy."""
+    full_text = " ".join([item[1] for item in ocr_results]).lower()
+    
+    extracted_data = {
+        "filament": 0.0,
+        "time_str": "0h 0m",
+        "material": None,
+        "detected_printer_id": None
+    }
+
+    # 1. Extract Filament (more precise)
+    # Looks for a number followed by 'g' AFTER "total filament" or "filament used"
+    filament_match = re.search(r'(?:total filament|filament used)\D*(\d+\.?\d*)\s*g', full_text)
+    if filament_match:
+        extracted_data["filament"] = round(float(filament_match.group(1)), 2)
+    else:  # Fallback to the original, less specific method
+        filament_match_fallback = re.search(r'(\d+\.?\d*)\s*g', full_text)
+        if filament_match_fallback:
+            extracted_data["filament"] = round(float(filament_match_fallback.group(1)), 2)
+
+    # 2. Extract Time (more precise)
+    hours, minutes = 0, 0
+    # Looks for a time pattern AFTER "total time" or "print time"
+    time_block_match = re.search(r'(?:total time|print time)\D*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?', full_text)
+    if time_block_match:
+        h_val = time_block_match.group(1)
+        m_val = time_block_match.group(2)
+        if h_val:
+            hours = int(h_val)
+        if m_val:
+            minutes = int(m_val)
+    
+    # Fallback if the specific search finds nothing
+    if hours == 0 and minutes == 0:
+        h_match_fallback = re.search(r'(\d+)\s*h', full_text)
+        m_match_fallback = re.search(r'(\d+)\s*m', full_text)
+        if h_match_fallback: hours = int(h_match_fallback.group(1))
+        if m_match_fallback: minutes = int(m_match_fallback.group(1))
+
+    if hours > 0 or minutes > 0:
+        extracted_data["time_str"] = f"{hours}h {minutes}m"
+
+    # 3. Detect Material by checking against the database
+    filaments_cur = g.db.execute("SELECT DISTINCT material FROM filaments WHERE company_id = ?", (company_id,)).fetchall()
+    known_materials = [row['material'].lower() for row in filaments_cur]
+    for material in known_materials:
+        if re.search(r'\b' + re.escape(material) + r'\b', full_text):
+            extracted_data["material"] = material.upper()
+            break 
+
+    # 4. Detect Printer by checking against the database
+    printers_cur = g.db.execute("SELECT id, brand, model FROM printers WHERE company_id = ?", (company_id,)).fetchall()
+    for printer in printers_cur:
+        if printer['brand'].lower() in full_text or printer['model'].lower() in full_text:
+            extracted_data["detected_printer_id"] = printer['id']
+            break
+
+    return extracted_data
+
+def update_filament_stock(company_id, final_data):
+    try:
+        material, brand = final_data.get("Material"), final_data.get("Brand")
+        grams_used = float(final_data.get("Filament (g)", 0))
+        if not all([material, brand, grams_used > 0]): return
+        g.db.execute("UPDATE filaments SET stock_g = stock_g - ? WHERE company_id = ? AND material = ? AND brand = ?",
+            (grams_used, company_id, material, brand))
+        g.db.commit()
+    except Exception as e:
+        g.db.rollback(); print(f"❌ Error updating stock for company {company_id}: {e}")
+
+def create_excel_file(company_id, final_data, printer, filament):
+    try:
+        template_path = APP_CONFIG.get("TEMPLATE_PATH", "FDM.xlsx")
+        if not os.path.exists(template_path): return None, f"Template '{template_path}' not found."
+        wb = load_workbook(template_path)
+        excel_output_dir = get_company_data_path(company_id, "Excel_Logs"); os.makedirs(excel_output_dir, exist_ok=True)
+        new_path = os.path.join(excel_output_dir, f"{final_data['Filename']}.xlsx")
+        calc_ws, adv_ws = wb["Calculation Sheet"], wb["Adv. Inputs"]
+        calc_ws['D4'] = final_data["Filename"]; calc_ws['D6'] = datetime.fromisoformat(final_data["timestamp"])
+        calc_ws['D7'] = "FabraForma"; calc_ws['D9'] = final_data["Material"]
+        calc_ws['D10'] = float(final_data["Filament Cost (₹/kg)"]); calc_ws['D11'] = float(final_data["Filament (g)"])
+        calc_ws['D12'] = parse_time_string(final_data["Time (e.g. 7h 30m)"]); calc_ws['D13'] = float(final_data["Labour Time (min)"])
+        adv_ws['C6'] = float(final_data.get("Labour Rate (₹/hr)", 100)); adv_ws['D6'] = 100
+        adv_ws['C11'] = printer['setup_cost']; adv_ws['D11'] = printer['setup_cost']
+        adv_ws['C15'] = printer['maintenance_cost']; adv_ws['D15'] = printer['maintenance_cost']
+        adv_ws['C18'] = printer['lifetime_years']; adv_ws['D18'] = printer['lifetime_years']
+        adv_ws['C22'] = printer['power_w']; adv_ws['D22'] = printer['power_w']
+        adv_ws['C23'] = printer['price_kwh']; adv_ws['D23'] = printer['price_kwh']
+        adv_ws['C4'] = filament.get('efficiency_factor', 1.0); adv_ws['D4'] = 1.0
+        adv_ws['C28'] = printer.get('buffer_factor', 1.0); adv_ws['D28'] = 1.0
+        wb.save(new_path)
+        return new_path, "Success"
+    except Exception as e:
+        traceback.print_exc(); return None, f"Error in create_excel_file: {e}"
+
+def log_to_master_excel(company_id, file_path, final_data, user_cogs, default_cogs):
+    try:
+        source_wb = load_workbook(file_path, data_only=True); calc_ws = source_wb["Calculation Sheet"]
+        date_val = calc_ws["D6"].value or datetime.now()
+        config = load_app_config()
+        values = [calc_ws[cell].value for cell in config["cells"]]
+        p_num = os.path.splitext(os.path.basename(file_path))[0]
+        new_row = [None, date_val, p_num] + values + [user_cogs, default_cogs, f'=HYPERLINK("{os.path.abspath(file_path)}", "Source File")']
+        month_name = date_val.strftime("%B")
+        ym_folder = get_company_data_path(company_id, "Monthly_Expenditure", f"{date_val.year}_{month_name}")
+        os.makedirs(ym_folder, exist_ok=True)
+        master_path = os.path.join(ym_folder, f"master_log_{month_name}.xlsx")
+        if os.path.exists(master_path):
+            master_wb = load_workbook(master_path); master_ws = master_wb.active
+            for row_idx in range(master_ws.max_row, 1, -1):
+                if master_ws.cell(row=row_idx, column=2).value == "TOTALS": master_ws.delete_rows(row_idx); break
+            all_rows = [list(row) for row in master_ws.iter_rows(min_row=2, values_only=True) if row and row[2] != p_num]
+        else:
+            master_wb = Workbook(); master_ws = master_wb.active; master_ws.title = "DataLog"
+            master_ws.append(config["headers"]); all_rows = []
+        all_rows.append(new_row)
+        all_rows.sort(key=lambda row: (row[1] if isinstance(row[1], datetime) else datetime.min, str(row[2])))
+        if master_ws.max_row > 1: master_ws.delete_rows(2, master_ws.max_row)
+        for idx, row_data in enumerate(all_rows, start=1):
+            row_data[0] = idx
+            if isinstance(row_data[1], datetime): row_data[1] = row_data[1].strftime("%Y-%m-%d %H:%M:%S")
+            master_ws.append(row_data)
+        last_row = master_ws.max_row; totals_row_idx = last_row + 1
+        master_ws.cell(row=totals_row_idx, column=2, value="TOTALS").font = Font(bold=True)
+        cols_to_sum = ["Filament (g)", "Time (h)", "Labour Time (min)", "User COGS (₹)", "Default COGS (₹)"]
+        header_row = [cell.value for cell in master_ws[1]]
+        for col_name in cols_to_sum:
+            try:
+                col_idx = header_row.index(col_name) + 1
+                formula = f"=SUM({get_column_letter(col_idx)}2:{get_column_letter(col_idx)}{last_row})"
+                master_ws.cell(row=totals_row_idx, column=col_idx, value=formula).font = Font(bold=True)
+            except ValueError: print(f"⚠️ Master log missing header '{col_name}'.")
+        master_wb.save(master_path)
+        return True, f"Logged to master: {os.path.basename(file_path)}"
+    except Exception as e:
+        traceback.print_exc(); return False, f"Error in log_to_master_excel: {e}"
+
+def save_app_log(company_id, final_data, cogs_data, local_image_filename):
+    log_path = get_company_data_path(company_id, "app_logs.json")
+    try:
+        logs = []
+        if os.path.exists(log_path):
+            with open(log_path, 'r') as f: content = f.read(); logs = json.loads(content) if content else []
+        log_entry = {
+            "timestamp": final_data["timestamp"], "filename": final_data["Filename"], "image_path": local_image_filename,
+            "data": { "Printer": final_data["Printer"], "Material": final_data["Material"], "Brand": final_data["Brand"],
+                      "Filament (g)": final_data["Filament (g)"], "Time": final_data["Time (e.g. 7h 30m)"],
+                      "User COGS (₹)": f"{cogs_data['user_cogs']:.2f}", "Default COGS (₹)": f"{cogs_data['default_cogs']:.2f}" }}
+        logs.append(log_entry); logs.sort(key=lambda x: x['timestamp'], reverse=True)
+        with open(log_path, 'w') as f: json.dump(logs, f, indent=4)
+    except Exception as e: print(f"❌ FAILED to save app log for company {company_id}: {e}")
+
+# --- APP INITIALIZATION ---
+
+def initialize_app():
+    global APP_CONFIG
+    APP_CONFIG = load_app_config()
+    defaults = { "SERVER_SHARE_DIR": "server_share", "TEMPLATE_PATH": "FDM.xlsx", "cells": ["D4", "D9", "D10", "D11", "D12", "D13"],
+                 "headers": ["Sr. No", "Date", "Part Number", "Filename", "Material", "Filament Cost (₹/kg)", "Filament (g)", "Time (h)", "Labour Time (min)", "User COGS (₹)", "Default COGS (₹)", "Source Link"] }
+    app.config['SECRET_KEY'] = APP_CONFIG.get('SECRET_KEY', 'a_default_super_secret_key_that_should_be_changed')
+    if any(key not in APP_CONFIG for key in defaults.keys()):
+        APP_CONFIG = {**defaults, **APP_CONFIG}
+        save_app_config(APP_CONFIG)
+    os.makedirs(os.path.join(SCRIPT_DIR, "data"), exist_ok=True)
+    os.makedirs(APP_CONFIG["SERVER_SHARE_DIR"], exist_ok=True)
+    with app.app_context():
+        init_db(SCRIPT_DIR)
+    return True
+
+initialize_app()
+get_ocr_reader()
+
+if __name__ == "__main__":
+    print("--- DEVELOPMENT SERVER ---")
+    print("This server is for development and one-time data migration only.")
+    print("For production on Windows, run using Waitress:")
+    print("waitress-serve --host 0.0.0.0 --port 5000 server:app\n")
+    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
