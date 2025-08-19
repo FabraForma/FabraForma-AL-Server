@@ -1,4 +1,3 @@
-# server.py - COMPLETE AND UPDATED CODE
 import os
 import re
 import json
@@ -9,6 +8,7 @@ import traceback
 from datetime import datetime, timedelta
 from functools import wraps
 import uuid
+import secrets
 
 from database import get_db_connection, init_db
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -120,16 +120,21 @@ def admin_required(f):
 
 # --- AUTHENTICATION & REGISTRATION ENDPOINTS ---
 
+@app.route('/auth/companies', methods=['GET'])
+def get_companies():
+    # This endpoint is kept for potential future use or administrative purposes.
+    companies_cur = g.db.execute("SELECT id, name FROM companies ORDER BY name").fetchall()
+    return jsonify([dict(row) for row in companies_cur])
+
 @app.route('/auth/login', methods=['POST'])
 def login():
     auth = request.json
-    # --- MODIFIED: Accept a generic 'identifier' which can be email or username ---
     if not auth or not auth.get('identifier') or not auth.get('password'):
         return jsonify({'message': 'Identifier and password are required'}), 401
     
     identifier = auth['identifier']
-    
-    # --- MODIFIED: Query checks both username and email columns ---
+    remember_me = auth.get('remember_me', False)
+
     user_row = g.db.execute(
         "SELECT * FROM users WHERE lower(email) = lower(?) OR lower(username) = lower(?)", 
         (identifier, identifier)
@@ -140,13 +145,88 @@ def login():
     
     user = dict(user_row)
     if check_password_hash(user['password_hash'], auth['password']):
-        token = jwt.encode({
+        access_token = jwt.encode({
             'user_id': user['id'], 'username': user['username'], 'company_id': user['company_id'],
             'role': user['role'], 'exp': datetime.utcnow() + timedelta(hours=24)
         }, app.config['SECRET_KEY'], algorithm="HS256")
-        return jsonify({'token': token})
+
+        response_data = {'token': access_token}
+
+        if remember_me:
+            remember_token = secrets.token_hex(32)
+            token_hash = generate_password_hash(remember_token)
+            expires_at = datetime.utcnow() + timedelta(days=30)
+            
+            try:
+                g.db.execute(
+                    "INSERT INTO auth_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)",
+                    (user['id'], token_hash, expires_at)
+                )
+                g.db.commit()
+                response_data['remember_token'] = remember_token
+            except Exception as e:
+                g.db.rollback()
+                print(f"ERROR: Could not save remember token: {e}")
+                # Fail gracefully, user can still log in without remember me
+        
+        return jsonify(response_data)
     
     return jsonify({'message': 'Invalid credentials'}), 401
+
+@app.route('/auth/refresh', methods=['POST'])
+def refresh():
+    data = request.json
+    remember_token = data.get('remember_token')
+    if not remember_token:
+        return jsonify({'message': 'Remember token is missing'}), 401
+
+    # We need to find the user associated with this token.
+    # Since we only store hashes, we must iterate and check.
+    all_tokens = g.db.execute("SELECT user_id, token_hash, expires_at FROM auth_tokens").fetchall()
+    user_id = None
+    token_hash_to_check = None
+
+    for row in all_tokens:
+        if check_password_hash(row['token_hash'], remember_token):
+            if datetime.utcnow() < datetime.fromisoformat(row['expires_at'].replace(' ', 'T')):
+                user_id = row['user_id']
+                token_hash_to_check = row['token_hash']
+                break
+            else:
+                # Token is expired, delete it
+                g.db.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (row['token_hash'],))
+                g.db.commit()
+                return jsonify({'message': 'Remember token has expired'}), 401
+
+    if not user_id:
+        return jsonify({'message': 'Invalid or expired remember token'}), 401
+
+    user = g.db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user:
+        return jsonify({'message': 'User associated with token not found'}), 404
+
+    # Issue a new access token
+    access_token = jwt.encode({
+        'user_id': user['id'], 'username': user['username'], 'company_id': user['company_id'],
+        'role': user['role'], 'exp': datetime.utcnow() + timedelta(hours=24)
+    }, app.config['SECRET_KEY'], algorithm="HS256")
+    
+    return jsonify({'token': access_token})
+
+@app.route('/auth/logout', methods=['POST'])
+@token_required
+def logout():
+    data = request.json
+    remember_token = data.get('remember_token')
+    if remember_token:
+        all_tokens = g.db.execute("SELECT token_hash FROM auth_tokens WHERE user_id = ?", (g.current_user['user_id'],)).fetchall()
+        for row in all_tokens:
+            if check_password_hash(row['token_hash'], remember_token):
+                g.db.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (row['token_hash'],))
+                g.db.commit()
+                break
+    return jsonify({'message': 'Logout successful'}), 200
+
 
 @app.route('/auth/register_company', methods=['POST'])
 def register_company():
