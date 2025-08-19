@@ -736,4 +736,4 @@ if __name__ == "__main__":
     print("This server is for development and one-time data migration only.")
     print("For production on Windows, run using Waitress:")
     print("waitress-serve --host 0.0.0.0 --port 5000 server:app\n")
-    app.run(host='0.0.0.0', port=5000, debug=True, use_reloader=False)
+    app.run(host='106.201.240.218', port=5000, debug=True, use_reloader=False)
