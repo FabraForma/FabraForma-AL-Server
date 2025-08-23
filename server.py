@@ -579,14 +579,25 @@ def extract_data_from_ocr(company_id, ocr_results):
         "detected_printer_id": None
     }
 
-    filament_match = re.search(r'(?:total filament|filament used)\D*(\d+\.?\d*)\s*g', full_text)
-    if filament_match:
-        extracted_data["filament"] = round(float(filament_match.group(1)), 2)
+    filament_g = 0.0
+    # 1. Prioritize "total filament"
+    priority_match = re.search(r'total filament\D*(\d+\.?\d*)\s*g', full_text)
+    if priority_match:
+        filament_g = round(float(priority_match.group(1)), 2)
     else:
-        filament_match_fallback = re.search(r'(\d+\.?\d*)\s*g', full_text)
-        if filament_match_fallback:
-            extracted_data["filament"] = round(float(filament_match_fallback.group(1)), 2)
+        # 2. Fallback: Find all numbers followed by 'g' and take the largest.
+        all_g_matches = re.findall(r'(\d+\.?\d*)\s*g', full_text)
+        if all_g_matches:
+            try:
+                numeric_values = [float(val) for val in all_g_matches]
+                if numeric_values:
+                    filament_g = round(max(numeric_values), 2)
+            except (ValueError, TypeError):
+                print("Could not convert found filament values to numbers.")
+                filament_g = 0.0
 
+    extracted_data["filament"] = filament_g
+    
     hours, minutes = 0, 0
     time_block_match = re.search(r'(?:total time|print time)\D*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?', full_text)
     if time_block_match:
