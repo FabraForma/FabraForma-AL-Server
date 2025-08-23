@@ -599,17 +599,22 @@ def extract_data_from_ocr(company_id, ocr_results):
     extracted_data["filament"] = filament_g
     
     hours, minutes = 0, 0
+    # 1. Prioritize "total time" or "print time"
     time_block_match = re.search(r'(?:total time|print time)\D*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?', full_text)
     if time_block_match:
         h_val, m_val = time_block_match.groups()
         if h_val: hours = int(h_val)
         if m_val: minutes = int(m_val)
     
+    # 2. Fallback: Find the largest hour and minute values in the text if the primary search fails
     if hours == 0 and minutes == 0:
-        h_match_fallback = re.search(r'(\d+)\s*h', full_text)
-        m_match_fallback = re.search(r'(\d+)\s*m', full_text)
-        if h_match_fallback: hours = int(h_match_fallback.group(1))
-        if m_match_fallback: minutes = int(m_match_fallback.group(1))
+        h_values = [int(h) for h in re.findall(r'(\d+)\s*h', full_text)]
+        m_values = [int(m) for m in re.findall(r'(\d+)\s*m', full_text)]
+        
+        if h_values:
+            hours = max(h_values)
+        if m_values:
+            minutes = max(m_values)
 
     if hours > 0 or minutes > 0:
         extracted_data["time_str"] = f"{hours}h {minutes}m"
