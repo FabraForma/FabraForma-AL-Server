@@ -58,7 +58,7 @@ def get_ocr_reader():
     if ocr_reader is None:
         print("⏳ Loading EasyOCR model into memory...")
         try:
-            ocr_reader = easyocr.Reader(['en'], gpu=False)
+            ocr_reader = easyocr.Reader(['en'], gpu=True)
             print("✅ EasyOCR model loaded.")
         except Exception as e:
             print(f"🛑 FATAL: Could not load EasyOCR model. Error: {e}")
