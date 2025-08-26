@@ -26,6 +26,8 @@ from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib import utils
 from reportlab.lib import colors
+from flask import send_file
+from io import BytesIO
 
 try:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -488,20 +490,36 @@ def generate_quotation():
     company_id = g.current_user['company_id']
     try:
         data = json.loads(request.form['json'])
-        uploads_folder = get_company_data_path(company_id, "uploads")
-        os.makedirs(uploads_folder, exist_ok=True)
+        
+        # --- Logo handling remains the same ---
+        logo_path = None
         if 'logo' in request.files:
+            uploads_folder = get_company_data_path(company_id, "uploads")
+            os.makedirs(uploads_folder, exist_ok=True)
             logo_file = request.files['logo']
             logo_path = os.path.join(uploads_folder, secure_filename(logo_file.filename))
             logo_file.save(logo_path)
             data['company_details']['logo_path'] = logo_path
-        output_folder = get_company_data_path(company_id, "Quotations")
-        os.makedirs(output_folder, exist_ok=True)
-        filename = f"Quotation_{data['customer_name'].replace(' ', '_')}_{int(time.time())}.pdf"
-        generate_quotation_pdf(os.path.join(output_folder, filename), data)
-        return jsonify({"status": "success", "filepath": os.path.join(output_folder, filename)})
+
+        # --- PDF Generation in Memory ---
+        buffer = BytesIO()
+        generate_quotation_pdf(buffer, data) # Your PDF function now writes to the buffer
+        buffer.seek(0) # Rewind the buffer to the beginning
+
+        # --- Create a filename for the download ---
+        customer_name_safe = re.sub(r'[^a-zA-Z0-9_]', '', data['customer_name'].replace(' ', '_'))
+        filename = f"Quotation_{customer_name_safe}_{int(time.time())}.pdf"
+
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/pdf'
+        )
+
     except Exception as e:
-        traceback.print_exc(); return jsonify({"status": "error", "message": str(e)}), 500
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/images/<path:filename>')
 @token_required
@@ -525,33 +543,55 @@ def ocr_upload():
 @token_required
 def process_image_upload():
     company_id = g.current_user['company_id']
-    if 'image' not in request.files or 'json' not in request.form: return jsonify({"error": "Missing image or data"}), 400
-    final_data = json.loads(request.form['json']); image_file = request.files['image']
+    if 'image' not in request.files or 'json' not in request.form: 
+        return jsonify({"error": "Missing image or data"}), 400
+    
+    final_data = json.loads(request.form['json'])
+    image_file = request.files['image']
+    
     try:
+        # --- Step 1: Save the uploaded image ---
         image_dir = get_company_data_path(company_id, "local_log_images")
         os.makedirs(image_dir, exist_ok=True)
         new_filename = final_data["Filename"] + os.path.splitext(image_file.filename)[1]
         image_file.save(os.path.join(image_dir, new_filename))
 
+        # --- Step 2: Validate Printer and Filament data from the database ---
         printer_row = g.db.execute("SELECT * FROM printers WHERE id=? AND company_id=?", (final_data.get("printer_id"), company_id)).fetchone()
         filament_row = g.db.execute("SELECT * FROM filaments WHERE material=? AND brand=? AND company_id=?", (final_data.get("Material"), final_data.get("Brand"), company_id)).fetchone()
-        if not printer_row or not filament_row: return jsonify({"status": "error", "message": "Printer/filament not found."}), 400
+        
+        if not printer_row or not filament_row:
+            return jsonify({"status": "error", "message": "Critical data missing: Printer or filament not found in the database."}), 400
+        
         printer, filament = dict(printer_row), dict(filament_row)
 
+        # --- Step 3: Perform Calculations ---
         cogs = calculate_cogs_values(final_data, printer, filament)
+
+        # --- Step 4: Create Individual Excel Log ---
         excel_path, excel_msg = create_excel_file(company_id, final_data, printer, filament)
-        if not excel_path: return jsonify({"status": "error", "message": excel_msg}), 500
+        if not excel_path:
+            return jsonify({"status": "error", "message": f"Failed to create Excel log: {excel_msg}"}), 500
+
+        # --- Step 5: Update Master Log ---
         success, msg = log_to_master_excel(company_id, excel_path, final_data, cogs['user_cogs'], cogs['default_cogs'])
-        if not success: return jsonify({"status": "error", "message": msg}), 500
+        if not success:
+            return jsonify({"status": "error", "message": f"Failed to update master log: {msg}"}), 500
+            
+        # --- Step 6: Finalize and commit changes ---
         update_filament_stock(company_id, final_data)
         save_app_log(company_id, final_data, cogs, new_filename)
+        
         processed_log_path = get_company_data_path(company_id, "processed_log.json")
         processed_log = json.load(open(processed_log_path)) if os.path.exists(processed_log_path) else {}
         processed_log[os.path.basename(image_file.filename)] = "completed"
         with open(processed_log_path, 'w') as f: json.dump(processed_log, f, indent=2)
+        
         return jsonify({"status": "success", "message": "File processed and logged successfully."})
+
     except Exception as e:
-        traceback.print_exc(); return jsonify({"status": "error", "message": str(e)}), 500
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"An unexpected server error occurred: {str(e)}"}), 500
 
 @app.route('/download/log/<path:filename>')
 @token_required
@@ -756,6 +796,101 @@ def save_app_log(company_id, final_data, cogs_data, local_image_filename):
         logs.append(log_entry); logs.sort(key=lambda x: x['timestamp'], reverse=True)
         with open(log_path, 'w') as f: json.dump(logs, f, indent=4)
     except Exception as e: print(f"❌ FAILED to save app log for company {company_id}: {e}")
+
+def generate_quotation_pdf(buffer, data):
+    """
+    Generates a quotation PDF and writes it to an in-memory buffer.
+    
+    Args:
+        buffer (BytesIO): The in-memory buffer to write the PDF to.
+        data (dict): The quotation data from the client.
+    """
+    c = canvas.Canvas(buffer, pagesize=letter)
+    width, height = letter
+
+    # --- Company Details & Logo ---
+    comp_details = data.get("company_details", {})
+    if comp_details.get("logo_path") and os.path.exists(comp_details["logo_path"]):
+        try:
+            img = utils.ImageReader(comp_details["logo_path"])
+            # Draw logo, maintaining aspect ratio
+            i_width, i_height = img.getSize()
+            aspect = i_height / float(i_width)
+            c.drawImage(img, 40, height - 100, width=80, height=(80 * aspect))
+        except Exception as e:
+            print(f"Could not draw logo on PDF: {e}")
+
+    c.setFont("Helvetica-Bold", 16)
+    c.drawRightString(width - 50, height - 60, comp_details.get("name", "Your Company"))
+    c.setFont("Helvetica", 10)
+    c.drawRightString(width - 50, height - 75, comp_details.get("address", "Company Address"))
+    c.drawRightString(width - 50, height - 90, comp_details.get("contact", "Contact Info"))
+
+    # --- Document Title ---
+    c.setFont("Helvetica-Bold", 24)
+    c.drawString(50, height - 150, "Quotation")
+    c.line(50, height - 155, width - 50, height - 155)
+
+    # --- Customer and Date Info ---
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(50, height - 190, "BILLED TO:")
+    c.setFont("Helvetica", 12)
+    c.drawString(50, height - 205, data.get("customer_name", "Valued Customer"))
+    if data.get("customer_company"):
+        c.drawString(50, height - 220, data.get("customer_company"))
+    
+    c.setFont("Helvetica", 12)
+    c.drawRightString(width - 50, height - 190, f"Date: {datetime.now().strftime('%Y-%m-%d')}")
+    # You could add a unique quote number here if needed
+    # c.drawRightString(width - 50, height - 205, f"Quote #: {str(uuid.uuid4())[:8].upper()}")
+
+    # --- Table Header ---
+    y_position = height - 260
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(60, y_position, "Part Description")
+    c.drawRightString(width - 200, y_position, "Unit Price")
+    c.drawRightString(width - 50, y_position, "Total")
+    c.line(50, y_position - 10, width - 50, y_position - 10)
+    y_position -= 30
+
+    # --- Pricing Calculations ---
+    total_cogs = sum(part.get("cogs", 0) for part in data["parts"])
+    margin_percent = data.get("margin_percent", 0)
+    subtotal = total_cogs / (1 - (margin_percent / 100.0)) if margin_percent < 100 else 0
+    tax_rate_percent = data.get("tax_rate_percent", 0)
+    tax_amount = subtotal * (tax_rate_percent / 100.0)
+    grand_total = subtotal + tax_amount
+    
+    # --- Table Items ---
+    c.setFont("Helvetica", 10)
+    # For this simple quote, we'll list the parts as a single line item.
+    # A more complex system would loop through `data["parts"]`.
+    line_item_description = f"{len(data['parts'])} Custom Manufactured Part(s)"
+    c.drawString(60, y_position, line_item_description)
+    c.drawRightString(width - 200, y_position, f"₹{subtotal:,.2f}")
+    c.drawRightString(width - 50, y_position, f"₹{subtotal:,.2f}")
+    y_position -= 30
+
+    # --- Totals Section ---
+    c.line(width - 250, y_position, width - 50, y_position)
+    y_position -= 20
+    c.setFont("Helvetica", 11)
+    c.drawRightString(width - 200, y_position, "Subtotal:")
+    c.drawRightString(width - 50, y_position, f"₹{subtotal:,.2f}")
+    y_position -= 20
+    c.drawRightString(width - 200, y_position, f"Tax ({tax_rate_percent}%):")
+    c.drawRightString(width - 50, y_position, f"₹{tax_amount:,.2f}")
+    y_position -= 20
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(width - 200, y_position, "Grand Total:")
+    c.drawRightString(width - 50, y_position, f"₹{grand_total:,.2f}")
+    
+    # --- Footer/Terms ---
+    c.setFont("Helvetica-Oblique", 9)
+    c.drawString(50, 50, "Thank you for your business! Prices are valid for 30 days.")
+
+    c.showPage()
+    c.save()
 
 # --- APP INITIALIZATION ---
 
