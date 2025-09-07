@@ -66,7 +66,15 @@ nsfw_detector = None # Global instance for our local content moderator.
 
 # --- Flask App Initialization ---
 app = Flask(__name__)
+# A secret key is required for Flask session management, used by the admin UI.
+# In a real app, this should be a long, random string set from an environment variable.
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'a-default-dev-secret-key-for-admin-ui')
 CORS(app)  # Enable Cross-Origin Resource Sharing for all routes.
+
+# --- Register Admin UI Blueprint ---
+# Import and register the blueprint for the admin web interface.
+from blueprints.admin_ui import admin_ui_bp
+app.register_blueprint(admin_ui_bp)
 
 # --- Centralized Logging Setup ---
 def setup_logging():

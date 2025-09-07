@@ -1,0 +1,29 @@
+{% extends 'admin_layout.html' %}
+
+{% block title %}Server Logs - Admin{% endblock %}
+
+{% block content %}
+    <style>
+        .log-container {
+            background-color: #2b2b2b;
+            color: #f1f1f1;
+            padding: 1rem;
+            border-radius: 5px;
+            font-family: "Courier New", Courier, monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+    </style>
+    <h1>Server Logs</h1>
+    <p>Displaying the last {{ num_lines }} lines from <code>{{ log_file_path }}</code>.</p>
+    <div class="log-container">
+        {% for line in log_lines %}
+            {{ line }}
+        {% else %}
+            No log entries found or log file is not accessible.
+        {% endfor %}
+    </div>
+{% endblock %}

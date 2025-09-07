@@ -67,7 +67,7 @@ def init_db(script_dir):
             username TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            company_id TEXT NOT NULL,
+            company_id TEXT,
             role TEXT NOT NULL,
             phone_number TEXT,
             dob TEXT,

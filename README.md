@@ -32,6 +32,25 @@ This version of the documentation is for the original, single-file server implem
     ```
     *Note: The `easyocr` package and its dependencies (`torch`) are quite large and may take some time to download and install.*
 
+## Management Commands
+
+This application includes a command-line interface for management tasks, such as creating a super admin user.
+
+### Creating a Super Admin
+
+To create the initial super admin user, run the following commands from your terminal in the project's root directory:
+
+```bash
+# For Linux/macOS
+export FLASK_APP=manage.py
+
+# For Windows (Command Prompt)
+# set FLASK_APP=manage.py
+
+flask createsuperuser
+```
+You will be prompted to enter a username, email, and password for the new super admin account.
+
 ## Running the Server
 
 Once the setup is complete, you can run the server. The application uses `waitress` as its production-ready WSGI server.
