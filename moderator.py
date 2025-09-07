@@ -1,6 +1,10 @@
+"""
+Placeholder module for NSFW (Not Safe For Work) content detection.
+"""
+
 class NSFWDetector:
     """
-    A placeholder for a real NSFW (Not Safe For Work) content detection model.
+    A placeholder for a real NSFW content detection model.
 
     This default implementation considers all images to be safe. It is intended
     to allow the application to be fully runnable without requiring heavy
@@ -13,7 +17,7 @@ class NSFWDetector:
     def __init__(self):
         """
         In a real implementation, this is where the detection model would be
-        loaded into memory.
+        loaded into memory. For now, it just prints an informational message.
         """
         print("INFO: Initializing placeholder NSFWDetector. All images will be considered safe.")
 
@@ -30,4 +34,5 @@ class NSFWDetector:
             - A string providing the reason for the determination.
         """
         # This placeholder implementation always returns True.
+        # It does not actually analyze the image bytes.
         return True, "Image is safe (Note: using placeholder NSFW detector)."
