@@ -1,3 +1,11 @@
+"""
+Main server file for the FabraForma Additive Ledger application.
+
+This file initializes the Flask application and defines all the API endpoints
+for user authentication, data management (printers, filaments), file handling,
+and the core image processing workflow for logging 3D prints.
+"""
+
 import os
 import re
 import json
@@ -13,19 +21,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from io import BytesIO
 
-# --- Pydantic for Validation ---
+# --- Third-Party Libraries ---
 from pydantic import ValidationError
-from validators import (
-    LoginModel, RegisterCompanyModel, CreateUserModel, ChangePasswordModel,
-    UpdateProfileModel, PrinterModel, ProcessImageModel, GenerateQuotationModel,
-    FilamentsPostModel
-)
-
-# --- Local NSFW Content Moderator ---
-from moderator import NSFWDetector
-
-# --- Standard Library Imports ---
-from database import get_db_connection, init_db
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import jwt
@@ -42,48 +39,73 @@ from reportlab.lib.units import inch
 from reportlab.lib import utils
 from reportlab.lib import colors
 
+# --- Local Application Imports ---
+# These imports expect validators.py and moderator.py to be in the same directory.
+from validators import (
+    LoginModel, RegisterCompanyModel, CreateUserModel, ChangePasswordModel,
+    UpdateProfileModel, PrinterModel, ProcessImageModel, GenerateQuotationModel,
+    FilamentsPostModel
+)
+from moderator import NSFWDetector
+from database import get_db_connection, init_db
+
+# --- Initial Setup ---
+# Set the current working directory to the script's directory to ensure relative paths work correctly.
 try:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
     os.chdir(SCRIPT_DIR)
 except NameError:
+    # Fallback for environments where __file__ is not defined
     SCRIPT_DIR = os.getcwd()
 
+# --- Global Configuration & State ---
 CONFIG_PATH = "server_config.json"
 APP_CONFIG = {}
-ocr_reader = None
-nsfw_detector = None # Global instance for our local detector
+ocr_reader = None  # Global variable to hold the EasyOCR reader instance, loaded on first use.
+nsfw_detector = None # Global instance for our local content moderator.
 
+# --- Flask App Initialization ---
 app = Flask(__name__)
-CORS(app)
+# A secret key is required for Flask session management, used by the admin UI.
+# In a real app, this should be a long, random string set from an environment variable.
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'a-default-dev-secret-key-for-admin-ui')
+CORS(app)  # Enable Cross-Origin Resource Sharing for all routes.
 
-# --- [NEW] CENTRALIZED LOGGING SETUP ---
+# --- Register Admin UI Blueprint ---
+# Import and register the blueprint for the admin web interface.
+from blueprints.admin_ui import admin_ui_bp
+app.register_blueprint(admin_ui_bp)
+
+# --- Centralized Logging Setup ---
 def setup_logging():
+    """Configures a rotating file logger for the application."""
     log_dir = os.path.join(SCRIPT_DIR, 'logs')
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, 'server.log')
-    # Rotate logs after 5 MB, keep 5 old copies.
+
+    # Configure the handler to rotate logs when they reach 5MB, keeping 5 old log files.
     handler = RotatingFileHandler(log_file, maxBytes=1024*1024*5, backupCount=5)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s [in %(pathname)s:%(lineno)d]')
     handler.setFormatter(formatter)
     
+    # Configure the root logger
     root_logger = logging.getLogger()
-    # Ensure no duplicate handlers
-    if not root_logger.handlers:
+    if not root_logger.handlers: # Avoid adding duplicate handlers on reload
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.INFO)
     
-    # Also configure Flask's default logger to use our handler
+    # Configure Flask's built-in logger to use our handler
     app.logger.handlers = []
     app.logger.addHandler(handler)
     app.logger.setLevel(logging.INFO)
-    app.logger.info("Application starting up...")
+    app.logger.info("Application starting up and logging configured.")
 
-# --- [NEW] GLOBAL ERROR HANDLERS ---
+# --- Global Error Handlers ---
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
-    # Log the full, detailed technical exception for debugging
+    """Catches and logs any unhandled exceptions in the application."""
     app.logger.error(f"An unhandled exception occurred: {e}", exc_info=True)
-    # Return a generic, safe message to the client
+    # Return a generic, non-revealing error message to the client.
     return jsonify({
         "error": "An unexpected server error occurred.",
         "message": "The issue has been logged for investigation."
@@ -91,8 +113,9 @@ def handle_unexpected_error(e):
 
 @app.errorhandler(ValidationError)
 def handle_validation_error(e):
+    """Catches Pydantic validation errors and returns a structured 400 response."""
     app.logger.warning(f"Validation error for request on '{request.path}': {e.errors()}")
-    # Format a user-friendly message from Pydantic's raw errors
+    # Format Pydantic's detailed errors into a more user-friendly structure.
     error_details = {err['loc'][0]: " ".join(map(str, err['loc'][1:])) + f": {err['msg']}" if len(err['loc']) > 1 else err['msg'] for err in e.errors()}
     return jsonify({
         "error": "Input validation failed",
@@ -100,69 +123,101 @@ def handle_validation_error(e):
         "details": error_details
     }), 400
 
-# --- FLASK APP CONTEXT & DATABASE ---
+# --- Flask App Context & Database Connection Management ---
 @app.before_request
 def before_request():
+    """
+    Before each request, get a database connection and store it in the
+    Flask global context `g`. This makes the connection available for the
+    duration of the request.
+    """
     g.db = get_db_connection()
 
 @app.teardown_request
 def teardown_request(exception):
+    """
+    After each request, close the database connection to free up resources.
+    This function is executed even if an exception occurs.
+    """
     db = g.pop('db', None)
     if db is not None:
         db.close()
 
-# --- HELPER FUNCTIONS (MODIFIED) ---
+# --- Helper Functions ---
 def get_ocr_reader():
+    """
+    Initializes and returns the EasyOCR reader instance.
+    Uses a global variable to ensure the model is only loaded into memory once.
+    """
     global ocr_reader
     if ocr_reader is None:
         app.logger.info("⏳ Loading EasyOCR model into memory...")
         try:
+            # Attempt to use GPU for faster processing.
             ocr_reader = easyocr.Reader(['en'], gpu=True)
-            app.logger.info("✅ EasyOCR model loaded.")
+            app.logger.info("✅ EasyOCR model loaded successfully.")
         except Exception as e:
             app.logger.critical(f"🛑 FATAL: Could not load EasyOCR model. Error: {e}")
-            ocr_reader = None
+            ocr_reader = None # Ensure it's not partially initialized.
     return ocr_reader
 
 def get_nsfw_detector():
-    """Initializes and returns the local NSFW detector."""
+    """Initializes and returns the local NSFW content detector instance."""
     global nsfw_detector
     if nsfw_detector is None:
         nsfw_detector = NSFWDetector()
     return nsfw_detector
 
 def get_company_data_path(company_id, *args):
+    """
+    Constructs a safe file path within a company-specific data directory.
+    This is used to isolate data between different companies (multi-tenancy).
+    """
     base_path = os.path.join(SCRIPT_DIR, "data", str(company_id))
     os.makedirs(base_path, exist_ok=True)
     return os.path.join(base_path, *args)
 
 def load_app_config():
+    """Loads the main server configuration from server_config.json."""
     try:
         with open(CONFIG_PATH, 'r') as f: return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError): return {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 def save_app_config(data):
+    """Saves data to the server_config.json file."""
     with open(CONFIG_PATH, 'w') as f: json.dump(data, f, indent=4)
     global APP_CONFIG
     APP_CONFIG = data.copy()
 
 def get_safe_path(subpath):
+    """
+    Ensures that a file path is within the designated shared directory
+    to prevent path traversal attacks.
+    """
     share_dir = os.path.abspath(APP_CONFIG.get("SERVER_SHARE_DIR", "server_share"))
     target_path = os.path.abspath(os.path.join(share_dir, subpath))
-    if not target_path.startswith(share_dir): return None
+    # Check if the resolved absolute path is still within the shared directory.
+    if not target_path.startswith(share_dir):
+        return None
     return target_path
 
-# --- DECORATORS ---
+# --- Custom Decorators for Route Handling ---
 def validate_with(model: any):
-    """Decorator to validate request JSON against a Pydantic model."""
+    """
+    A decorator that validates the incoming request's JSON payload against a
+    given Pydantic model. If validation fails, it raises a ValidationError
+    which is caught by the global error handler.
+    """
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
             try:
+                # Parse and validate the JSON, storing the result in the request context `g`.
                 g.validated_data = model.parse_obj(request.get_json())
                 return f(*args, **kwargs)
             except ValidationError as e:
-                raise e # Let the global handler catch this
+                raise e # Re-raise to be caught by the global error handler
             except Exception as e:
                  app.logger.error(f"Error during request parsing before validation: {e}")
                  return jsonify({"error": "Invalid request format. Expected JSON."}), 400
@@ -170,15 +225,22 @@ def validate_with(model: any):
     return decorator
 
 def token_required(f):
+    """
+    A decorator to protect routes that require authentication. It checks for a
+    valid JWT in the 'Authorization' header.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
         token = None
         if 'Authorization' in request.headers:
+            # Expects "Bearer <token>" format.
             token = request.headers['Authorization'].split(" ")[1]
         if not token:
             return jsonify({'message': 'Token is missing!'}), 401
         try:
+            # Decode the JWT using the app's secret key.
             data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            # Store the user's info in the request context `g` for use in the endpoint.
             g.current_user = {
                 'user_id': data['user_id'], 'username': data['username'],
                 'company_id': data['company_id'], 'role': data['role']
@@ -192,6 +254,10 @@ def token_required(f):
     return decorated
 
 def admin_required(f):
+    """
+    A decorator for routes that require admin privileges. It must be used
+    after `@token_required`.
+    """
     @wraps(f)
     @token_required
     def decorated(*args, **kwargs):
@@ -201,24 +267,30 @@ def admin_required(f):
     return decorated
 
 # --- AUTHENTICATION & REGISTRATION ENDPOINTS ---
+
 @app.route('/auth/companies', methods=['GET'])
 def get_companies():
+    """Endpoint to get a list of all registered companies."""
     companies_cur = g.db.execute("SELECT id, name FROM companies ORDER BY name").fetchall()
     return jsonify([dict(row) for row in companies_cur])
 
 @app.route('/auth/login', methods=['POST'])
 @validate_with(LoginModel)
 def login():
+    """Handles user login and issues a JWT access token."""
     data = g.validated_data
+    # Find user by email or username, case-insensitively.
     user_row = g.db.execute(
         "SELECT * FROM users WHERE lower(email) = lower(?) OR lower(username) = lower(?)", 
         (data.identifier, data.identifier)
     ).fetchone()
 
+    # Verify user exists and password is correct.
     if not user_row or not check_password_hash(user_row['password_hash'], data.password):
         return jsonify({'message': 'Invalid credentials'}), 401
     
     user = dict(user_row)
+    # Create a JWT access token that expires in 24 hours.
     access_token = jwt.encode({
         'user_id': user['id'], 'username': user['username'], 'company_id': user['company_id'],
         'role': user['role'], 'exp': datetime.utcnow() + timedelta(hours=24)
@@ -226,9 +298,10 @@ def login():
 
     response_data = {'token': access_token}
 
+    # If "Remember Me" is checked, create a long-lived refresh token.
     if data.remember_me:
-        remember_token = secrets.token_hex(32)
-        token_hash = generate_password_hash(remember_token)
+        remember_token = secrets.token_hex(32) # The actual token sent to the client.
+        token_hash = generate_password_hash(remember_token) # The value stored in the DB.
         expires_at = datetime.utcnow() + timedelta(days=30)
         try:
             g.db.execute(
@@ -245,11 +318,14 @@ def login():
 
 @app.route('/auth/refresh', methods=['POST'])
 def refresh():
+    """Refreshes an access token using a long-lived 'remember_me' token."""
     data = request.json
     remember_token = data.get('remember_token')
     if not remember_token:
         return jsonify({'message': 'Remember token is missing'}), 401
 
+    # This is inefficient: it loads all tokens into memory.
+    # A better approach would be to have an indexed selector for the token.
     all_tokens = g.db.execute("SELECT user_id, token_hash, expires_at FROM auth_tokens").fetchall()
     user_id = None
 
@@ -259,6 +335,7 @@ def refresh():
                 user_id = row['user_id']
                 break
             else:
+                # Clean up expired token.
                 g.db.execute("DELETE FROM auth_tokens WHERE token_hash = ?", (row['token_hash'],))
                 g.db.commit()
                 return jsonify({'message': 'Remember token has expired'}), 401
@@ -270,6 +347,7 @@ def refresh():
     if not user:
         return jsonify({'message': 'User associated with token not found'}), 404
 
+    # Issue a new 24-hour access token.
     access_token = jwt.encode({
         'user_id': user['id'], 'username': user['username'], 'company_id': user['company_id'],
         'role': user['role'], 'exp': datetime.utcnow() + timedelta(hours=24)
@@ -280,9 +358,11 @@ def refresh():
 @app.route('/auth/logout', methods=['POST'])
 @token_required
 def logout():
+    """Logs the user out by invalidating their 'remember_me' token if provided."""
     data = request.json
     remember_token = data.get('remember_token')
     if remember_token:
+        # This is also inefficient as it iterates through all of a user's tokens.
         all_tokens = g.db.execute("SELECT token_hash FROM auth_tokens WHERE user_id = ?", (g.current_user['user_id'],)).fetchall()
         for row in all_tokens:
             if check_password_hash(row['token_hash'], remember_token):
@@ -294,13 +374,16 @@ def logout():
 @app.route('/auth/register_company', methods=['POST'])
 @validate_with(RegisterCompanyModel)
 def register_company():
+    """Endpoint for creating a new company and its initial admin user."""
     data = g.validated_data
+    # Check for existing company or email.
     if g.db.execute("SELECT id FROM companies WHERE lower(name) = lower(?)", (data.company_name,)).fetchone():
         return jsonify({'message': 'A company with this name already exists'}), 409
     if g.db.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (data.admin_email,)).fetchone():
         return jsonify({'message': 'This email is already registered'}), 409
 
     try:
+        # Create the new company and user in a single transaction.
         new_company_id = str(uuid.uuid4())
         password_hash = generate_password_hash(data.admin_password)
         cursor = g.db.cursor()
@@ -318,6 +401,7 @@ def register_company():
 @admin_required
 @validate_with(CreateUserModel)
 def create_user():
+    """Allows an admin to create a new user within their own company."""
     data = g.validated_data
     company_id = g.current_user['company_id']
     if g.db.execute("SELECT id FROM users WHERE lower(email) = lower(?)", (data.email,)).fetchone():
@@ -341,12 +425,14 @@ def create_user():
 @app.route('/user/profile', methods=['GET'])
 @token_required
 def get_user_profile():
+    """Fetches the profile information for the currently authenticated user."""
     user_id = g.current_user['user_id']
     user_row = g.db.execute("SELECT username, email, phone_number, dob, profile_picture_path FROM users WHERE id = ?", (user_id,)).fetchone()
     if not user_row:
         return jsonify({'message': 'User not found'}), 404
     
     profile_data = dict(user_row)
+    # If a profile picture exists, construct its full URL.
     if profile_data.get('profile_picture_path'):
         profile_data['profile_picture_url'] = f"{request.url_root.rstrip('/')}/user/profile_picture/{profile_data['profile_picture_path']}"
     return jsonify(profile_data)
@@ -355,9 +441,11 @@ def get_user_profile():
 @token_required
 @validate_with(UpdateProfileModel)
 def update_user_profile():
+    """Updates the profile information for the currently authenticated user."""
     data = g.validated_data
     user_id = g.current_user['user_id']
     
+    # Dynamically build the UPDATE statement based on the fields provided.
     update_fields = data.dict(exclude_unset=True)
     if not update_fields:
         return jsonify({'message': 'No update information provided'}), 400
@@ -377,6 +465,7 @@ def update_user_profile():
 @token_required
 @validate_with(ChangePasswordModel)
 def change_password():
+    """Allows the authenticated user to change their own password."""
     data = g.validated_data
     user_id = g.current_user['user_id']
     
@@ -396,6 +485,7 @@ def change_password():
 @app.route('/user/profile_picture', methods=['POST'])
 @token_required
 def upload_profile_picture():
+    """Handles the upload of a new profile picture."""
     user_id = g.current_user['user_id']
     company_id = g.current_user['company_id']
 
@@ -406,15 +496,18 @@ def upload_profile_picture():
     image_bytes = file.read()
     file.seek(0) # Rewind the file stream after reading
 
+    # Check the image for inappropriate content before saving.
     is_safe, reason = nsfw_detector.is_image_safe(image_bytes)
     if not is_safe:
         return jsonify({'error': 'Image upload rejected', 'message': reason}), 400
 
+    # Create a secure, unique filename.
     filename = secure_filename(f"{user_id}_{int(time.time())}{os.path.splitext(file.filename)[1]}")
     upload_folder = get_company_data_path(company_id, "profile_pictures")
     file.save(os.path.join(upload_folder, filename))
 
     try:
+        # Update the user's record with the new picture path.
         g.db.execute("UPDATE users SET profile_picture_path = ? WHERE id = ?", (filename, user_id))
         g.db.commit()
         new_url = f"{request.url_root.rstrip('/')}/user/profile_picture/{filename}"
@@ -426,18 +519,19 @@ def upload_profile_picture():
 @app.route('/user/profile_picture/<path:filename>')
 @token_required
 def serve_profile_picture(filename):
+    """Serves a user's profile picture from their company's data folder."""
     company_id = g.current_user['company_id']
     directory = get_company_data_path(company_id, "profile_pictures")
     return send_from_directory(directory, filename)
 
-# --- CORE APPLICATION ENDPOINTS ---
+# --- CORE APPLICATION ENDPOINTS (Server Admin & Data Management) ---
 
 @app.route('/server/settings', methods=['GET', 'POST'])
 @admin_required
 def handle_server_settings():
+    """Allows admins to get or update the main server_config.json file."""
     if request.method == 'POST':
         try:
-            # Basic validation: ensure it's a dictionary
             settings_data = request.get_json()
             if not isinstance(settings_data, dict):
                 return jsonify({"error": "Invalid format, expected a JSON object"}), 400
@@ -445,13 +539,14 @@ def handle_server_settings():
             return jsonify({"status": "success", "message": "Settings saved."})
         except Exception as e:
             raise e
-    else:
+    else: # GET
         return jsonify(load_app_config())
 
 @app.route('/server/files/', defaults={'subpath': ''})
 @app.route('/server/files/<path:subpath>')
 @admin_required
 def list_files(subpath):
+    """Lists files and directories in the configured shared folder."""
     safe_path = get_safe_path(subpath)
     if not safe_path or not os.path.isdir(safe_path):
         return jsonify({"error": "Invalid or inaccessible path"}), 404
@@ -467,8 +562,7 @@ def list_files(subpath):
                     "size": 0 if is_dir else os.path.getsize(item_path)
                 })
             except OSError:
-                # Skip files that can't be accessed (e.g., permission errors)
-                continue
+                continue # Skip files with permission errors
         return jsonify(file_list)
     except Exception as e:
         raise e
@@ -477,6 +571,7 @@ def list_files(subpath):
 @app.route('/server/upload/<path:subpath>', methods=['POST'])
 @admin_required
 def upload_file(subpath):
+    """Handles file uploads to the shared server folder."""
     safe_path = get_safe_path(subpath)
     if not safe_path or not os.path.isdir(safe_path):
         return jsonify({"error": "Invalid destination"}), 400
@@ -491,6 +586,7 @@ def upload_file(subpath):
 @app.route('/server/download/<path:filepath>')
 @admin_required
 def download_server_file(filepath):
+    """Allows admins to download a file from the shared folder."""
     safe_path = get_safe_path(filepath)
     if not safe_path or not os.path.isfile(safe_path):
         return jsonify({"error": "File not found"}), 404
@@ -499,6 +595,11 @@ def download_server_file(filepath):
 @app.route('/printers', methods=['GET', 'POST'])
 @token_required
 def handle_printers():
+    """
+    Handles fetching or completely replacing the list of printers for a company.
+    POST: Replaces the entire list of printers.
+    GET: Retrieves the current list of printers.
+    """
     company_id = g.current_user['company_id']
     if request.method == 'POST':
         printers_data = request.get_json()
@@ -512,8 +613,9 @@ def handle_printers():
 
         try:
             cursor = g.db.cursor()
+            # This is an "overwrite" operation: delete all, then insert all.
             cursor.execute("DELETE FROM printers WHERE company_id = ?", (company_id,))
-            if validated_printers: # Only run insert if there's data
+            if validated_printers:
                 cursor.executemany("""
                     INSERT INTO printers (id, company_id, brand, model, setup_cost, maintenance_cost, lifetime_years, power_w, price_kwh, buffer_factor, uptime_percent)
                     VALUES (:id, :company_id, :brand, :model, :setup_cost, :maintenance_cost, :lifetime_years, :power_w, :price_kwh, :buffer_factor, :uptime_percent)""",
@@ -530,6 +632,11 @@ def handle_printers():
 @app.route('/filaments', methods=['GET', 'POST'])
 @token_required
 def handle_filaments():
+    """
+    Handles fetching or completely replacing the filament data for a company.
+    POST: Replaces all filament data.
+    GET: Retrieves all filament data.
+    """
     company_id = g.current_user['company_id']
     if request.method == 'POST':
         filaments_data = request.get_json()
@@ -550,6 +657,7 @@ def handle_filaments():
 
         try:
             cursor = g.db.cursor()
+            # Overwrite operation: delete all, then insert all.
             cursor.execute("DELETE FROM filaments WHERE company_id = ?", (company_id,))
             
             rows_to_insert = []
@@ -569,6 +677,7 @@ def handle_filaments():
             raise e
     else: # GET
         filaments_cur = g.db.execute("SELECT * FROM filaments WHERE company_id = ?", (company_id,)).fetchall()
+        # The client expects the data nested by material and brand.
         filaments_dict = {}
         for row in filaments_cur:
             material = row['material']
@@ -579,6 +688,7 @@ def handle_filaments():
 @app.route('/logs', methods=['GET'])
 @token_required
 def get_logs():
+    """Retrieves the main application log file (app_logs.json)."""
     log_path = get_company_data_path(g.current_user['company_id'], "app_logs.json")
     try:
         with open(log_path, 'r') as f: return jsonify(json.load(f))
@@ -587,14 +697,22 @@ def get_logs():
 @app.route('/processed_log', methods=['GET'])
 @token_required
 def get_processed_log():
+    """
+    Retrieves a log of which files have been processed to avoid reprocessing.
+    """
     log_path = get_company_data_path(g.current_user['company_id'], "processed_log.json")
     try:
         with open(log_path, 'r') as f: return jsonify(json.load(f))
     except (FileNotFoundError, json.JSONDecodeError): return jsonify({})
 
+# --- CORE WORKFLOW ENDPOINTS ---
+
 @app.route('/generate_quotation', methods=['POST'])
 @token_required
 def generate_quotation():
+    """
+    Generates a quotation PDF based on provided customer details, parts, and pricing.
+    """
     company_id = g.current_user['company_id']
     try:
         data = GenerateQuotationModel.parse_raw(request.form['json'])
@@ -616,6 +734,7 @@ def generate_quotation():
         logo_file.save(logo_path)
         data.company_details.logo_path = logo_path
     
+    # Generate the PDF in memory.
     buffer = BytesIO()
     generate_quotation_pdf(buffer, data.dict()) 
     buffer.seek(0)
@@ -633,12 +752,17 @@ def generate_quotation():
 @app.route('/images/<path:filename>')
 @token_required
 def serve_image(filename):
+    """Serves processed log images."""
     image_dir = get_company_data_path(g.current_user['company_id'], "local_log_images")
     return send_from_directory(image_dir, filename)
 
 @app.route('/ocr_upload', methods=['POST'])
 @token_required
 def ocr_upload():
+    """
+    Accepts an image upload and performs OCR on it to extract print details.
+    This is the first step in the automated logging workflow.
+    """
     if 'image' not in request.files: return jsonify({"error": "No image file provided"}), 400
     
     file = request.files['image']
@@ -652,13 +776,16 @@ def ocr_upload():
     reader = get_ocr_reader()
     if not reader: return jsonify({"error": "OCR model not available."}), 503
     
-    # EasyOCR readtext can accept bytes directly
     ocr_results = reader.readtext(image_bytes)
     return jsonify(extract_data_from_ocr(g.current_user['company_id'], ocr_results))
 
 @app.route('/process_image', methods=['POST'])
 @token_required
 def process_image_upload():
+    """
+    The second step of the logging workflow. Accepts an image and verified JSON data,
+    then performs all the necessary calculations, logging, and file operations.
+    """
     company_id = g.current_user['company_id']
     if 'image' not in request.files or 'json' not in request.form:
         return jsonify({"error": "Missing image or data"}), 400
@@ -677,10 +804,12 @@ def process_image_upload():
     if not is_safe:
         return jsonify({'error': 'Image upload rejected', 'message': reason}), 400
     
+    # Save the final image.
     image_dir = get_company_data_path(company_id, "local_log_images")
     new_filename = final_data["Filename"] + os.path.splitext(image_file.filename)[1]
     image_file.save(os.path.join(image_dir, new_filename))
 
+    # Fetch data needed for calculations.
     printer_row = g.db.execute("SELECT * FROM printers WHERE id=? AND company_id=?", (final_data.get("printer_id"), company_id)).fetchone()
     filament_row = g.db.execute("SELECT * FROM filaments WHERE material=? AND brand=? AND company_id=?", (final_data.get("Material"), final_data.get("Brand"), company_id)).fetchone()
     
@@ -689,6 +818,7 @@ def process_image_upload():
     
     printer, filament = dict(printer_row), dict(filament_row)
 
+    # Perform all processing steps.
     cogs = calculate_cogs_values(final_data, printer, filament)
     excel_path, excel_msg = create_excel_file(company_id, final_data, printer, filament)
     if not excel_path:
@@ -701,6 +831,7 @@ def process_image_upload():
     update_filament_stock(company_id, final_data)
     save_app_log(company_id, final_data, cogs, new_filename)
     
+    # Mark the file as processed to avoid duplicates.
     processed_log_path = get_company_data_path(company_id, "processed_log.json")
     processed_log = json.load(open(processed_log_path)) if os.path.exists(processed_log_path) else {}
     processed_log[os.path.basename(image_file.filename)] = "completed"
@@ -711,52 +842,63 @@ def process_image_upload():
 @app.route('/download/log/<path:filename>')
 @token_required
 def download_log_file(filename):
+    """Allows downloading of individual Excel log files."""
     excel_dir = get_company_data_path(g.current_user['company_id'], "Excel_Logs")
     return send_from_directory(os.path.abspath(excel_dir), filename, as_attachment=True)
 
 @app.route('/download/masterlog/<year_month>')
 @token_required
 def download_master_log_file(year_month):
+    """Allows downloading of the master monthly Excel log."""
     filename = f"master_log_{year_month.split('_')[1]}.xlsx"
     directory = get_company_data_path(g.current_user['company_id'], "Monthly_Expenditure", year_month)
     return send_from_directory(os.path.abspath(directory), filename, as_attachment=True)
 
-# --- PROCESSING HELPER FUNCTIONS (FULL CODE, LOGGING ADDED) ---
+# --- PROCESSING HELPER FUNCTIONS ---
+
 def parse_time_string(time_str):
+    """Converts a time string like '7h 30m' into total hours as a float."""
     h_match = re.search(r'(\d+)\s*h', time_str, re.IGNORECASE); h = int(h_match.group(1)) if h_match else 0
     m_match = re.search(r'(\d+)\s*m', time_str, re.IGNORECASE); m = int(m_match.group(1)) if m_match else 0
     s_match = re.search(r'(\d+)\s*s', time_str, re.IGNORECASE); s = int(s_match.group(1)) if s_match else 0
     return round(h + (m / 60.0) + (s / 3600.0), 2)
 
 def calculate_printer_hourly_rate(printer_data):
+    """Calculates the effective hourly cost of running a printer."""
     try:
         total_cost = printer_data['setup_cost'] + (printer_data['maintenance_cost'] * printer_data['lifetime_years'])
         total_hours = printer_data['lifetime_years'] * 365 * 24 * (printer_data.get('uptime_percent', 50) / 100)
         if total_hours == 0: return 0.0
+        # Rate = (Amortized Cost / Total Usable Hours) + (Power Cost per Hour)
         return (total_cost / total_hours) + ((printer_data['power_w'] / 1000) * printer_data['price_kwh'])
     except (KeyError, TypeError, ZeroDivisionError): return 0.0
 
 def calculate_cogs_values(form_data, printer_data, filament_data):
+    """Calculates the Cost of Goods Sold (COGS) for a print."""
     try:
         filament_g = float(form_data.get("Filament (g)", 0)); time_str = form_data.get("Time (e.g. 7h 30m)", "0h 0m")
         labour_time_min = float(form_data.get("Labour Time (min)", 0)); labour_rate_user = float(form_data.get("Labour Rate (₹/hr)", 0))
         print_time_hours = parse_time_string(time_str)
+        # User-defined COGS
         mat_cost = (filament_data.get('price', 0) / 1000) * filament_g * filament_data.get('efficiency_factor', 1.0)
         labour_cogs = (labour_rate_user / 60) * labour_time_min
         printer_cogs = calculate_printer_hourly_rate(printer_data) * printer_data.get('buffer_factor', 1.0) * print_time_hours
         total_cogs_user = mat_cost + labour_cogs + printer_cogs
+        # Default COGS for comparison
         mat_cost_default = (filament_data.get('price', 0) / 1000) * filament_g
-        labour_cogs_default = (100 / 60) * labour_time_min
+        labour_cogs_default = (100 / 60) * labour_time_min # Default labour rate of ₹100/hr
         printer_cogs_default = calculate_printer_hourly_rate(printer_data) * print_time_hours
         total_cogs_default = mat_cost_default + labour_cogs_default + printer_cogs_default
         return {"user_cogs": total_cogs_user, "default_cogs": total_cogs_default}
     except (ValueError, TypeError, KeyError, ZeroDivisionError): return {"user_cogs": 0.0, "default_cogs": 0.0}
 
 def extract_data_from_ocr(company_id, ocr_results):
+    """Processes raw OCR text to extract key details about a 3D print."""
     full_text = " ".join([item[1] for item in ocr_results]).lower()
     
     extracted_data = { "filament": 0.0, "time_str": "0h 0m", "material": None, "detected_printer_id": None }
 
+    # Extract filament usage
     filament_g = 0.0
     priority_match = re.search(r'total filament\D*(\d+\.?\d*)\s*g', full_text)
     if priority_match:
@@ -772,6 +914,7 @@ def extract_data_from_ocr(company_id, ocr_results):
                 filament_g = 0.0
     extracted_data["filament"] = filament_g
     
+    # Extract print time
     hours, minutes = 0, 0
     time_block_match = re.search(r'(?:total time|print time)\D*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?', full_text)
     if time_block_match:
@@ -787,6 +930,7 @@ def extract_data_from_ocr(company_id, ocr_results):
 
     if hours > 0 or minutes > 0: extracted_data["time_str"] = f"{hours}h {minutes}m"
 
+    # Detect material based on known filaments in DB
     filaments_cur = g.db.execute("SELECT DISTINCT material FROM filaments WHERE company_id = ?", (company_id,)).fetchall()
     known_materials = [row['material'].lower() for row in filaments_cur]
     for material in known_materials:
@@ -794,6 +938,7 @@ def extract_data_from_ocr(company_id, ocr_results):
             extracted_data["material"] = material.upper()
             break 
 
+    # Detect printer based on known printers in DB
     printers_cur = g.db.execute("SELECT id, brand, model FROM printers WHERE company_id = ?", (company_id,)).fetchall()
     for printer in printers_cur:
         if printer['brand'].lower() in full_text or printer['model'].lower() in full_text:
@@ -802,6 +947,7 @@ def extract_data_from_ocr(company_id, ocr_results):
     return extracted_data
 
 def update_filament_stock(company_id, final_data):
+    """Decrements the stock for a given filament after a print is logged."""
     try:
         material, brand = final_data.get("Material"), final_data.get("Brand")
         grams_used = float(final_data.get("Filament (g)", 0))
@@ -814,6 +960,7 @@ def update_filament_stock(company_id, final_data):
         app.logger.error(f"Error updating stock for company {company_id}: {e}")
 
 def create_excel_file(company_id, final_data, printer, filament):
+    """Creates a detailed Excel log for a single print from a template."""
     try:
         template_path = APP_CONFIG.get("TEMPLATE_PATH", "FDM.xlsx")
         if not os.path.exists(template_path): return None, f"Template '{template_path}' not found."
@@ -840,6 +987,7 @@ def create_excel_file(company_id, final_data, printer, filament):
         return None, str(e)
 
 def log_to_master_excel(company_id, file_path, final_data, user_cogs, default_cogs):
+    """Appends a new record to the master monthly Excel log."""
     try:
         source_wb = load_workbook(file_path, data_only=True); calc_ws = source_wb["Calculation Sheet"]
         date_val = calc_ws["D6"].value or datetime.now()
@@ -890,6 +1038,7 @@ def log_to_master_excel(company_id, file_path, final_data, user_cogs, default_co
         return False, str(e)
 
 def save_app_log(company_id, final_data, cogs_data, local_image_filename):
+    """Saves a JSON record of the processed print to app_logs.json."""
     log_path = get_company_data_path(company_id, "app_logs.json")
     try:
         logs = []
@@ -908,6 +1057,7 @@ def save_app_log(company_id, final_data, cogs_data, local_image_filename):
         app.logger.error(f"FAILED to save app log for company {company_id}: {e}", exc_info=True)
 
 def generate_quotation_pdf(buffer, data):
+    """Generates a quotation PDF in memory."""
     # This function remains largely the same, but logging should be added for errors.
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
@@ -920,34 +1070,48 @@ def generate_quotation_pdf(buffer, data):
             c.drawImage(img, 40, height - 100, width=80, height=(80 * aspect))
         except Exception as e:
             app.logger.error(f"Could not draw logo on PDF: {e}")
-    # ... [Rest of PDF generation code from your original file] ...
-    # Ensure to replace ₹ with a currency symbol if needed or keep as is.
+    # ... [Rest of PDF generation code would go here] ...
+    # This is a simplified version for demonstration.
+    c.drawString(1*inch, 10*inch, f"Quotation for: {data.get('customer_name', 'N/A')}")
     c.save()
 
 # --- APP INITIALIZATION ---
 
 def initialize_app():
+    """
+    Initializes the Flask application and its components.
+    This function is called once at startup.
+    """
     global APP_CONFIG
     setup_logging()
     APP_CONFIG = load_app_config()
     defaults = { "SERVER_SHARE_DIR": "server_share", "TEMPLATE_PATH": "FDM.xlsx", "cells": ["D4", "D9", "D10", "D11", "D12", "D13"],
                  "headers": ["Sr. No", "Date", "Part Number", "Filename", "Material", "Filament Cost (₹/kg)", "Filament (g)", "Time (h)", "Labour Time (min)", "User COGS (₹)", "Default COGS (₹)", "Source Link"] }
+    # Set a default SECRET_KEY if not found, but log a warning.
+    # For production, this should be set via an environment variable.
+    if 'SECRET_KEY' not in APP_CONFIG:
+        app.logger.warning("SECRET_KEY not found in config. Using a default, insecure key.")
     app.config['SECRET_KEY'] = APP_CONFIG.get('SECRET_KEY', 'a_default_super_secret_key_that_should_be_changed')
+
     if any(key not in APP_CONFIG for key in defaults.keys()):
         APP_CONFIG = {**defaults, **APP_CONFIG}
         save_app_config(APP_CONFIG)
+
+    # Create necessary directories
     os.makedirs(os.path.join(SCRIPT_DIR, "data"), exist_ok=True)
     os.makedirs(APP_CONFIG["SERVER_SHARE_DIR"], exist_ok=True)
+
+    # Initialize the database schema if it doesn't exist.
     with app.app_context():
         init_db(SCRIPT_DIR)
     return True
 
+# --- Application Startup ---
 initialize_app()
-get_ocr_reader()
-get_nsfw_detector()
+get_ocr_reader() # Pre-load the OCR model on startup
+get_nsfw_detector() # Pre-load the NSFW detector
 
 if __name__ == "__main__":
     from waitress import serve
     app.logger.info("--- Starting Production Server with Waitress ---")
     serve(app, host='0.0.0.0', port=5000)
-

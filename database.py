@@ -1,37 +1,63 @@
-# database.py
+"""
+Database initialization and connection management for the server.
+
+This script handles:
+1.  Creating a connection to the SQLite database.
+2.  Initializing the database schema for a new installation.
+3.  Performing a simple, one-time migration for older database schemas.
+4.  Seeding the database with default data on first run.
+"""
 import sqlite3
-import json
 import os
 import uuid
 import time
 from werkzeug.security import generate_password_hash
 
+# The name of the SQLite database file.
 DB_FILE = "server_data.sqlite"
 
 def get_db_connection():
+    """
+    Establishes a connection to the SQLite database.
+
+    Returns:
+        A sqlite3.Connection object configured to return rows as dictionary-like objects.
+    """
     conn = sqlite3.connect(DB_FILE)
+    # This allows accessing columns by name (e.g., row['username'])
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db(script_dir):
+    """
+    Initializes the database. Checks if tables exist and creates them if not.
+    Also handles a basic schema migration to add new columns to the users table
+    if an older version of the database is detected.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
 
     # --- Check for users table and update schema if necessary (migration) ---
+    # This is a simple migration strategy. For complex changes, a dedicated
+    # migration tool like Alembic would be more suitable.
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
     if cursor.fetchone():
+        # If the 'users' table exists, check if it has the 'email' column.
+        # If not, it's an older schema that needs updating.
         try:
             cursor.execute("SELECT email FROM users LIMIT 1")
         except sqlite3.OperationalError:
             print("INFO: Older database schema detected. Adding new profile columns to 'users' table...")
+            # Add new columns for user profile information.
             cursor.execute("ALTER TABLE users ADD COLUMN email TEXT")
             cursor.execute("ALTER TABLE users ADD COLUMN phone_number TEXT")
             cursor.execute("ALTER TABLE users ADD COLUMN dob TEXT")
             cursor.execute("ALTER TABLE users ADD COLUMN profile_picture_path TEXT")
+            # Add a unique index to the email column to prevent duplicates.
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email)")
             print("✅ 'users' table schema updated.")
     else:
-        # --- Create all tables from scratch if database is new ---
+        # --- Create all tables from scratch if the database is new ---
         print("INFO: Database not found. Initializing new database...")
         cursor.execute('CREATE TABLE companies (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE)')
         
@@ -41,7 +67,7 @@ def init_db(script_dir):
             username TEXT NOT NULL,
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
-            company_id TEXT NOT NULL,
+            company_id TEXT,
             role TEXT NOT NULL,
             phone_number TEXT,
             dob TEXT,
@@ -56,6 +82,7 @@ def init_db(script_dir):
             maintenance_cost REAL, lifetime_years INTEGER, power_w REAL, price_kwh REAL,
             buffer_factor REAL, uptime_percent REAL, FOREIGN KEY (company_id) REFERENCES companies (id)
         )''')
+
         cursor.execute('''
         CREATE TABLE filaments (
             id INTEGER PRIMARY KEY AUTOINCREMENT, company_id TEXT NOT NULL, material TEXT NOT NULL,
@@ -64,10 +91,10 @@ def init_db(script_dir):
         )''')
         print("✅ Core database tables created successfully.")
 
-        # --- Create default data for a new installation ---
+        # --- Seed the database with default data for a new installation ---
         print("INFO: Creating default company and data.")
         default_company_id = "fabraforma_default"
-        default_password_hash = generate_password_hash("password")
+        default_password_hash = generate_password_hash("password") # Default password is "password"
 
         cursor.execute("INSERT INTO companies (id, name) VALUES (?, ?)", (default_company_id, "FabraForma"))
         
@@ -91,7 +118,8 @@ def init_db(script_dir):
             VALUES (?, ?, ?, ?, ?, ?)""", default_filaments)
         print("  -> Created default filaments.")
 
-    # --- NEW: Create the auth_tokens table if it doesn't exist ---
+    # --- Create the auth_tokens table if it doesn't exist ---
+    # This was added later, so it's checked separately to support older DBs.
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='auth_tokens';")
     if not cursor.fetchone():
         print("INFO: Creating 'auth_tokens' table for 'Remember Me' functionality...")
@@ -105,6 +133,7 @@ def init_db(script_dir):
         )''')
         print("✅ 'auth_tokens' table created.")
 
+    # Commit all changes and close the connection.
     conn.commit()
     conn.close()
     print("✅ Database initialization/check complete.")

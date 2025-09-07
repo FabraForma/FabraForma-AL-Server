@@ -1,0 +1,28 @@
+{% extends 'admin_layout.html' %}
+
+{% block title %}Companies - Admin{% endblock %}
+
+{% block content %}
+    <h1>Registered Companies</h1>
+    <p>Total Companies: {{ companies|length }}</p>
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Name</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for company in companies %}
+            <tr>
+                <td>{{ company.id }}</td>
+                <td>{{ company.name }}</td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="2">No companies found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endblock %}

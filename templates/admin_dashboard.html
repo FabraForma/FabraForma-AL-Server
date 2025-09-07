@@ -1,0 +1,17 @@
+{% extends 'admin_layout.html' %}
+
+{% block title %}Dashboard - Admin{% endblock %}
+
+{% block content %}
+    <h1>Admin Dashboard</h1>
+    <p>Welcome, {{ g.user.username }}!</p>
+
+    <h2>Server Status</h2>
+    <p style="color: green;">● Server is running.</p>
+
+    <h2>Quick Links</h2>
+    <ul>
+        <li><a href="{{ url_for('admin_ui.view_logs') }}">View Server Logs</a></li>
+        <li><a href="{{ url_for('admin_ui.list_companies') }}">Manage Companies</a></li>
+    </ul>
+{% endblock %}
