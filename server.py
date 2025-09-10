@@ -867,8 +867,8 @@ def generate_quotation_pdf(buffer, data):
     # A more complex system would loop through `data["parts"]`.
     line_item_description = f"{len(data['parts'])} Custom Manufactured Part(s)"
     c.drawString(60, y_position, line_item_description)
-    c.drawRightString(width - 200, y_position, f"₹{subtotal:,.2f}")
-    c.drawRightString(width - 50, y_position, f"₹{subtotal:,.2f}")
+    c.drawRightString(width - 200, y_position, f"Rs{subtotal:,.2f}")
+    c.drawRightString(width - 50, y_position, f"Rs{subtotal:,.2f}")
     y_position -= 30
 
     # --- Totals Section ---
@@ -876,14 +876,14 @@ def generate_quotation_pdf(buffer, data):
     y_position -= 20
     c.setFont("Helvetica", 11)
     c.drawRightString(width - 200, y_position, "Subtotal:")
-    c.drawRightString(width - 50, y_position, f"₹{subtotal:,.2f}")
+    c.drawRightString(width - 50, y_position, f"Rs{subtotal:,.2f}")
     y_position -= 20
     c.drawRightString(width - 200, y_position, f"Tax ({tax_rate_percent}%):")
-    c.drawRightString(width - 50, y_position, f"₹{tax_amount:,.2f}")
+    c.drawRightString(width - 50, y_position, f"Rs{tax_amount:,.2f}")
     y_position -= 20
     c.setFont("Helvetica-Bold", 12)
     c.drawRightString(width - 200, y_position, "Grand Total:")
-    c.drawRightString(width - 50, y_position, f"₹{grand_total:,.2f}")
+    c.drawRightString(width - 50, y_position, f"Rs{grand_total:,.2f}")
     
     # --- Footer/Terms ---
     c.setFont("Helvetica-Oblique", 9)
