@@ -1,0 +1,195 @@
+2025-09-10 10:31:27,338 - server - INFO - Application starting up... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:79]
+2025-09-10 10:31:27,338 - server - INFO - Application starting up... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:79]
+2025-09-10 10:31:31,606 - moderator - INFO - Initializing local NSFW detection model... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:24]
+2025-09-10 10:31:31,606 - moderator - INFO - NSFW model will run on device: cuda [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:28]
+2025-09-10 10:31:33,366 - server - INFO - --- Starting Production Server with Waitress --- [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:951]
+2025-09-10 10:31:33,366 - server - INFO - --- Starting Production Server with Waitress --- [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:951]
+2025-09-10 10:31:33,371 - waitress - INFO - Serving on http://0.0.0.0:5000 [in c:\Program Files\Python312\Lib\site-packages\waitress\wasyncore.py:449]
+2025-09-10 10:32:13,193 - moderator - ERROR - An error occurred during NSFW detection: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py", line 62, in is_image_safe
+    image = Image.open(image_bytes)
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Program Files\Python312\Lib\site-packages\PIL\Image.py", line 3513, in open
+    fp = builtins.open(filename, "rb")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte
+2025-09-10 10:33:31,005 - moderator - ERROR - An error occurred during NSFW detection: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py", line 62, in is_image_safe
+    image = Image.open(image_bytes)
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Program Files\Python312\Lib\site-packages\PIL\Image.py", line 3513, in open
+    fp = builtins.open(filename, "rb")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte
+2025-09-10 10:33:31,012 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:33:31,012 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:34:01,308 - moderator - ERROR - An error occurred during NSFW detection: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py", line 62, in is_image_safe
+    image = Image.open(image_bytes)
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Program Files\Python312\Lib\site-packages\PIL\Image.py", line 3513, in open
+    fp = builtins.open(filename, "rb")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte
+2025-09-10 10:34:01,308 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:34:01,308 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:35:34,774 - server - INFO - Application starting up... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:79]
+2025-09-10 10:35:34,774 - server - INFO - Application starting up... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:79]
+2025-09-10 10:35:38,529 - moderator - INFO - Initializing local NSFW detection model... [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:24]
+2025-09-10 10:35:38,529 - moderator - INFO - NSFW model will run on device: cuda [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:28]
+2025-09-10 10:35:40,036 - server - INFO - --- Starting Production Server with Waitress --- [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:951]
+2025-09-10 10:35:40,036 - server - INFO - --- Starting Production Server with Waitress --- [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:951]
+2025-09-10 10:35:40,036 - waitress - INFO - Serving on http://0.0.0.0:5000 [in c:\Program Files\Python312\Lib\site-packages\waitress\wasyncore.py:449]
+2025-09-10 10:35:44,599 - moderator - ERROR - An error occurred during NSFW detection: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py", line 62, in is_image_safe
+    image = Image.open(image_bytes)
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Program Files\Python312\Lib\site-packages\PIL\Image.py", line 3513, in open
+    fp = builtins.open(filename, "rb")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte
+2025-09-10 10:35:44,603 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:35:44,603 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:36:01,797 - moderator - ERROR - An error occurred during NSFW detection: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\moderator.py", line 62, in is_image_safe
+    image = Image.open(image_bytes)
+            ^^^^^^^^^^^^^^^^^^^^^^^
+  File "c:\Program Files\Python312\Lib\site-packages\PIL\Image.py", line 3513, in open
+    fp = builtins.open(filename, "rb")
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 0: invalid start byte
+2025-09-10 10:36:01,797 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
+2025-09-10 10:36:01,797 - server - ERROR - An unhandled exception occurred: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png' [in C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py:85]
+Traceback (most recent call last):
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 917, in full_dispatch_request
+    rv = self.dispatch_request()
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\AppData\Roaming\Python\Python312\site-packages\flask\app.py", line 902, in dispatch_request
+    return self.ensure_sync(self.view_functions[rule.endpoint])(**view_args)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 191, in decorated
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Rachit\Desktop\FabraForma-AL-Server\server.py", line 616, in generate_quotation
+    logo_file.save(logo_path)
+  File "c:\Program Files\Python312\Lib\site-packages\werkzeug\datastructures\file_storage.py", line 129, in save
+    dst = open(dst, "wb")
+          ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'C:\\Users\\Rachit\\Desktop\\FabraForma-AL-Server\\data\\8cfcbca7-b613-4a24-b20a-9349abd7528f\\uploads\\FabraForma-01.png'
